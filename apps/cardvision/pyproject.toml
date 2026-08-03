@@ -1,0 +1,18 @@
+[project]
+name = "cardvision"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "asyncpg>=0.31.0",
+    "boto3>=1.43.60",
+    "fastapi>=0.141.1",
+    "numpy>=2.5.1",
+    "opencv-python-headless>=5.0.0.93",
+    "pillow>=12.3.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.32",
+    "scikit-image>=0.26.0",
+    "uvicorn[standard]>=0.52.0",
+]

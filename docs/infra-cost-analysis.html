@@ -1,0 +1,471 @@
+<title>Infrastructure Cost Analysis — AuctionHous TCG</title>
+<style>
+  :root {
+    --bg: #eef1f6;
+    --surface: #ffffff;
+    --surface-sunken: #e4e9f2;
+    --ink: #10182b;
+    --ink-muted: #4b5468;
+    --ink-faint: #7c86a1;
+    --rule: #c7cedc;
+    --accent: #9c6f0b;
+    --accent-strong: #7a560a;
+    --accent-tint: #f3e6c4;
+    --good: #047857;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --shadow: 0 1px 2px rgba(16, 24, 43, 0.06), 0 8px 24px -12px rgba(16, 24, 43, 0.18);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220;
+      --surface: #141d33;
+      --surface-sunken: #101828;
+      --ink: #e7ebf5;
+      --ink-muted: #9aa4be;
+      --ink-faint: #6b7691;
+      --rule: #2a3550;
+      --accent: #d4af37;
+      --accent-strong: #e8c766;
+      --accent-tint: #2a2411;
+      --good: #34d399;
+      --warn: #f59e0b;
+      --bad: #f87171;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b1220;
+    --surface: #141d33;
+    --surface-sunken: #101828;
+    --ink: #e7ebf5;
+    --ink-muted: #9aa4be;
+    --ink-faint: #6b7691;
+    --rule: #2a3550;
+    --accent: #d4af37;
+    --accent-strong: #e8c766;
+    --accent-tint: #2a2411;
+    --good: #34d399;
+    --warn: #f59e0b;
+    --bad: #f87171;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  }
+  :root[data-theme="light"] {
+    --bg: #eef1f6;
+    --surface: #ffffff;
+    --surface-sunken: #e4e9f2;
+    --ink: #10182b;
+    --ink-muted: #4b5468;
+    --ink-faint: #7c86a1;
+    --rule: #c7cedc;
+    --accent: #9c6f0b;
+    --accent-strong: #7a560a;
+    --accent-tint: #f3e6c4;
+    --good: #047857;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --shadow: 0 1px 2px rgba(16, 24, 43, 0.06), 0 8px 24px -12px rgba(16, 24, 43, 0.18);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .report {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 5rem;
+  }
+
+  h1, h2, h3 {
+    font-family: ui-serif, Georgia, "Iowan Old Style", "Times New Roman", serif;
+    font-weight: 600;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+
+  .num, td.num, .total-figure, .metric-value {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Cover ---- */
+  .cover {
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 1.75rem;
+    margin-bottom: 2.5rem;
+  }
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.9rem;
+  }
+  .cover h1 {
+    font-size: 2.1rem;
+    line-height: 1.2;
+    margin: 0 0 0.6rem;
+  }
+  .cover .dek {
+    color: var(--ink-muted);
+    font-size: 1.05rem;
+    max-width: 62ch;
+    margin: 0 0 1.6rem;
+  }
+  .cover-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.75rem;
+    margin: 0;
+  }
+  .cover-meta div { display: flex; flex-direction: column; gap: 0.15rem; }
+  .cover-meta dt {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+  }
+  .cover-meta dd {
+    margin: 0;
+    font-size: 0.88rem;
+    color: var(--ink-muted);
+  }
+
+  section { margin-bottom: 2.75rem; }
+  h2 {
+    font-size: 1.4rem;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 0.5rem;
+    margin: 0 0 1.1rem;
+  }
+  h3 {
+    font-size: 1.08rem;
+    margin: 0 0 0.2rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .stage-meta {
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    font-weight: 400;
+    color: var(--ink-faint);
+    letter-spacing: 0.02em;
+  }
+  p { color: var(--ink-muted); max-width: 68ch; }
+  section > p:first-of-type { margin-top: 0; }
+  strong { color: var(--ink); }
+
+  /* ---- Callouts ---- */
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 1.25rem 1.5rem;
+    box-shadow: var(--shadow);
+  }
+  .callout-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.5rem;
+    font-weight: 600;
+  }
+  .callout p { color: var(--ink); max-width: none; margin: 0.4rem 0 0; }
+  .callout p:first-of-type { margin-top: 0; }
+
+  .aside {
+    background: var(--surface-sunken);
+    border-radius: 4px;
+    padding: 1.25rem 1.5rem;
+  }
+  .aside h2 { border: none; padding: 0; margin-bottom: 0.6rem; font-size: 1.15rem; }
+  .aside p { max-width: none; }
+
+  /* ---- Totals strip ---- */
+  .totals-strip {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 1.5rem 0 0;
+  }
+  .totals-strip .cell {
+    background: var(--surface);
+    padding: 1rem 1.1rem;
+  }
+  .totals-strip .cell-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-faint);
+    margin: 0 0 0.35rem;
+  }
+  .totals-strip .cell-value {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .totals-strip .cell-value small {
+    font-size: 0.62rem;
+    font-weight: 400;
+    color: var(--ink-faint);
+    display: block;
+    margin-top: 0.2rem;
+  }
+
+  /* ---- Tables ---- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    background: var(--surface);
+    min-width: 480px;
+  }
+  th, td {
+    padding: 0.6rem 0.9rem;
+    text-align: left;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  thead th {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-faint);
+    font-weight: 600;
+    background: var(--surface-sunken);
+  }
+  tbody th {
+    font-weight: 500;
+    color: var(--ink-muted);
+    white-space: normal;
+  }
+  tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
+  tr.total-row th, tr.total-row td {
+    border-top: 1px solid var(--ink);
+    font-weight: 700;
+    color: var(--ink);
+  }
+  td.bad { color: var(--bad); }
+  td.good { color: var(--good); }
+  .footnote {
+    font-size: 0.78rem;
+    color: var(--ink-faint);
+    margin: 0.6rem 0 0;
+    max-width: none;
+  }
+  .stage-block { margin-bottom: 2rem; }
+  .stage-block:last-child { margin-bottom: 0; }
+
+  ul.sources {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  ul.sources li { font-size: 0.85rem; color: var(--ink-muted); }
+  ul.sources a { color: var(--accent-strong); text-decoration: none; border-bottom: 1px solid currentColor; }
+  ul.sources a:hover { color: var(--accent); }
+
+  hr.rule {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 2.75rem 0;
+  }
+
+  code {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+    background: var(--surface-sunken);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.85em;
+    color: var(--ink);
+  }
+
+  a.focus-visible, a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 600px) {
+    .cover h1 { font-size: 1.6rem; }
+    .totals-strip { grid-template-columns: 1fr; }
+  }
+</style>
+
+<article class="report">
+
+  <header class="cover">
+    <p class="eyebrow">Infrastructure Cost Analysis</p>
+    <h1>What it actually costs to run AuctionHous&nbsp;&#8209;&nbsp;TCG's data layer</h1>
+    <p class="dek">Database, authentication, real-time bidding state, and card-image storage, priced at three real growth stages for a trading-card marketplace &mdash; not at eBay's.</p>
+    <dl class="cover-meta">
+      <div><dt>Prepared</dt><dd>July 28, 2026</dd></div>
+      <div><dt>Scope</dt><dd>Postgres &middot; Auth &middot; Redis &middot; Object storage &middot; Compute</dd></div>
+      <div><dt>Feeds into</dt><dd>Account creation build-out</dd></div>
+    </dl>
+  </header>
+
+  <section class="callout recommendation">
+    <p class="callout-label">Recommendation</p>
+    <p><strong>Supabase</strong> (managed Postgres + Auth + file storage, one bill) for the database and login system, <strong>Cloudflare R2</strong> for card photos, <strong>Upstash Redis</strong> for live auction/bid state. The Go backend (<code>apps/api</code>) connects straight to Supabase's underlying Postgres with a normal connection string and verifies its JWTs &mdash; it never goes through Supabase's client SDK. That keeps every table Go touches (wallet ledger, escrow, listings) in one real Postgres database, with login/signup handled by a system that's already been through more security review than a first-pass custom auth flow would get.</p>
+    <p>Cost: roughly <strong>$0&ndash;15/mo</strong> while building, <strong>$45&ndash;60/mo</strong> at a few thousand users, <strong>$165&ndash;380/mo</strong> at a real 30,000-user marketplace. Full math below.</p>
+  </section>
+
+  <section class="aside reality-check">
+    <h2>&ldquo;Like eBay&rdquo; isn't a pricing tier</h2>
+    <p>eBay doesn't rent a database plan &mdash; it runs its own data centers, thousands of database instances, and dedicated infrastructure teams, inside a technology budget that's a multi-billion-dollar annual line item in its public filings. Raw hosting is one small piece of that, not something priced separately anywhere. That's a different kind of problem (build-and-staff-your-own-infrastructure-org) than the one in front of you right now (which managed Postgres tier), so it isn't a usable benchmark to size AuctionHous against. The table below prices the problem you actually have: a TCG marketplace at three realistic points on its growth curve.</p>
+  </section>
+
+  <section>
+    <h2>Three growth stages, priced</h2>
+    <p>Two architectures, compared at each stage: <strong>Path A</strong> bundles Postgres, auth, and file storage into Supabase's one bill. <strong>Path B</strong> keeps them as separate best-in-class vendors (Neon for Postgres, AWS Cognito for auth, R2 for storage). Redis and compute hosting are the same either way. All figures are engineering estimates built from each vendor's published unit pricing (sources at the bottom) &mdash; nobody sells a packaged &ldquo;30,000-user marketplace&rdquo; quote, so these are derived, not quoted.</p>
+
+    <div class="stage-block">
+      <h3>Stage 0 <span class="stage-meta">building &amp; soft launch &middot; &lt;200 users</span></h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">Component</th><th scope="col">Path A &mdash; Supabase bundle</th><th scope="col">Path B &mdash; Neon + Cognito</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Postgres + Auth + Storage</th><td class="num good">$0 <span class="footnote" style="display:inline">(Supabase Free)</span></td><td class="num">&mdash;</td></tr>
+            <tr><th scope="row">Postgres</th><td class="num">bundled above</td><td class="num good">$0 (Neon Free)</td></tr>
+            <tr><th scope="row">Auth</th><td class="num">bundled above</td><td class="num good">$0 (&lt;10k MAU free)</td></tr>
+            <tr><th scope="row">File storage</th><td class="num">bundled above</td><td class="num good">$0 (R2 Free, 10GB)</td></tr>
+            <tr><th scope="row">Redis</th><td class="num good">$0 (Upstash Free)</td><td class="num good">$0 (Upstash Free)</td></tr>
+            <tr><th scope="row">Compute hosting</th><td class="num">$0&ndash;10</td><td class="num">$0&ndash;10</td></tr>
+            <tr class="total-row"><th scope="row">Total / month</th><td class="num">$0&ndash;10</td><td class="num">$0&ndash;10</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">Free tiers cover this stage entirely either way &mdash; the only real spend is wherever the Go API and Next.js app run. Supabase's free projects pause after 7 days of inactivity; fine for local dev against the Docker Postgres you already have, worth $25/mo Pro if you need an always-on demo link.</p>
+    </div>
+
+    <div class="stage-block">
+      <h3>Stage 1 <span class="stage-meta">early public traction &middot; ~2,000 users</span></h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">Component</th><th scope="col">Path A &mdash; Supabase bundle</th><th scope="col">Path B &mdash; Neon + Cognito</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Postgres + Auth + Storage*</th><td class="num">$25 flat</td><td class="num">&mdash;</td></tr>
+            <tr><th scope="row">Postgres</th><td class="num">bundled above</td><td class="num">$15&ndash;30</td></tr>
+            <tr><th scope="row">Auth</th><td class="num">bundled above</td><td class="num good">$0 (still &lt;10k MAU)</td></tr>
+            <tr><th scope="row">File storage</th><td class="num">bundled above</td><td class="num">$1&ndash;3</td></tr>
+            <tr><th scope="row">Redis</th><td class="num">$5&ndash;10</td><td class="num">$5&ndash;10</td></tr>
+            <tr><th scope="row">Compute hosting</th><td class="num">$15&ndash;25</td><td class="num">$15&ndash;25</td></tr>
+            <tr class="total-row"><th scope="row">Total / month</th><td class="num">$45&ndash;60</td><td class="num">$36&ndash;68</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">*Supabase's $25/mo Pro plan is one line item that includes 8GB Postgres, 100k monthly active users of auth, 100GB file storage, and 250GB bandwidth &mdash; not three separate charges. Roughly a wash against Path B at this size; the difference shows up at the next stage.</p>
+    </div>
+
+    <div class="stage-block">
+      <h3>Stage 2 <span class="stage-meta">growing marketplace &middot; ~30,000 users, real daily auction volume</span></h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">Component</th><th scope="col">Path A &mdash; Supabase</th><th scope="col">Path B &mdash; Neon + Cognito</th><th scope="col">Path C &mdash; Neon + Clerk</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Postgres + Auth + Storage*</th><td class="num">$85&ndash;180</td><td class="num">&mdash;</td><td class="num">&mdash;</td></tr>
+            <tr><th scope="row">Postgres</th><td class="num">bundled above</td><td class="num">$150&ndash;400</td><td class="num">$150&ndash;400</td></tr>
+            <tr><th scope="row">Auth (30k users)</th><td class="num">bundled above</td><td class="num bad">$300 (Cognito Essentials)</td><td class="num">$100 flat (Clerk Pro, 50k incl.)</td></tr>
+            <tr><th scope="row">File storage</th><td class="num">bundled above</td><td class="num">$10&ndash;40</td><td class="num">$10&ndash;40</td></tr>
+            <tr><th scope="row">Redis</th><td class="num">$40&ndash;100</td><td class="num">$40&ndash;100</td><td class="num">$40&ndash;100</td></tr>
+            <tr><th scope="row">Compute hosting</th><td class="num">$40&ndash;100</td><td class="num">$40&ndash;100</td><td class="num">$40&ndash;100</td></tr>
+            <tr class="total-row"><th scope="row">Total / month</th><td class="num good">$165&ndash;380</td><td class="num bad">$540&ndash;920</td><td class="num">$340&ndash;640</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">*Supabase's base $25/mo plus a larger compute add-on and modest storage/bandwidth overage at this volume. This is the stage where the paths actually diverge, and it's driven by one thing: how each vendor prices auth per user.</p>
+    </div>
+
+    <div class="totals-strip">
+      <div class="cell">
+        <p class="cell-label">Stage 0</p>
+        <p class="cell-value num">$0&ndash;10<small>/month</small></p>
+      </div>
+      <div class="cell">
+        <p class="cell-label">Stage 1</p>
+        <p class="cell-value num">$45&ndash;60<small>/month</small></p>
+      </div>
+      <div class="cell">
+        <p class="cell-label">Stage 2</p>
+        <p class="cell-value num">$165&ndash;380<small>/month</small></p>
+      </div>
+    </div>
+    <p class="footnote">Recommended path (Supabase + R2 + Upstash) at each stage. Even at 30,000 active users &mdash; a genuinely healthy niche marketplace &mdash; the data layer stays under $400/mo.</p>
+  </section>
+
+  <hr class="rule" />
+
+  <section>
+    <h2>Why the totals diverge</h2>
+    <p>Every vendor here prices Postgres, Redis, and storage in roughly the same shape: pay for the compute/storage/bandwidth you actually use. Auth is the odd one out &mdash; some vendors charge <em>per user</em>, and that bill scales with your growth in a way the others don't.</p>
+    <p>AWS Cognito's default (&ldquo;Essentials&rdquo;) tier bills $0.015 per monthly active user after the first 10,000 free. At 30,000 users that's 20,000 billable &times; $0.015 &mdash; <strong>$300/month for login alone</strong>, and it keeps climbing linearly with every user you add. Clerk flattens this with a $100/mo plan that includes 50,000 users, so it doesn't bite until you're past that line. Supabase goes further and folds auth into the same flat plan as the database itself &mdash; up to 100,000 monthly active users are already covered by the $25/mo Pro plan you'd need for the database anyway. For a marketplace whose whole pitch is a thin 2% fee, paying a growing per-user tax just to let people log in is the wrong shape of cost to take on.</p>
+  </section>
+
+  <section>
+    <h2>Raw pricing reference</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Service</th><th scope="col">Provider</th><th scope="col">Price</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Postgres</th><td>Neon</td><td class="num">$0.106&ndash;0.222/CU-hr compute + $0.35/GB-mo storage; 100 CU-hr/mo free</td></tr>
+          <tr><th scope="row">Postgres + Auth + Storage</th><td>Supabase</td><td class="num">Free, or $25/mo Pro (8GB db, 100k MAU auth, 100GB storage, 250GB bandwidth incl.)</td></tr>
+          <tr><th scope="row">Postgres</th><td>AWS RDS</td><td class="num">db.t4g.micro ~$11.68/mo compute; storage/IOPS/Multi-AZ billed separately, Multi-AZ = 2&times;</td></tr>
+          <tr><th scope="row">Redis</th><td>Upstash</td><td class="num">$0.20/100k commands + $0.25/GB-mo; 256MB &amp; 500k commands/mo free; free egress</td></tr>
+          <tr><th scope="row">Auth</th><td>Clerk</td><td class="num">Free to 50k MRU; Pro $100/mo incl. 50k MRU, then $0.02/user</td></tr>
+          <tr><th scope="row">Auth</th><td>AWS Cognito</td><td class="num">10k MAU free, then $0.015/MAU (Essentials) down to as low as $0.0025/MAU at high volume (Lite)</td></tr>
+          <tr><th scope="row">Object storage</th><td>Cloudflare R2</td><td class="num">$0.015/GB-mo storage, <strong>$0 egress</strong>; 10GB free</td></tr>
+          <tr><th scope="row">Compute hosting</th><td>Render</td><td class="num">$7/mo Starter, $25/mo Standard per service</td></tr>
+          <tr><th scope="row">Compute hosting</th><td>Fly.io</td><td class="num">Pure pay-per-second; smallest always-on app ~$2&ndash;5/mo</td></tr>
+          <tr><th scope="row">Compute hosting</th><td>Railway</td><td class="num">$5/mo Hobby or $20/mo Pro plan, then metered vCPU/RAM on top</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section>
+    <h2>The actual recommendation</h2>
+    <p><strong>Database + login:</strong> Supabase. It's still plain Postgres underneath &mdash; the Go backend connects with a normal <code>DATABASE_URL</code> and runs the same migrations already sitting in <code>apps/api/migrations</code>. Nothing about the wallet ledger, escrow, or listings tables changes. Supabase Auth issues a JWT on signup/login; the Go API's <code>internal/platform</code> middleware verifies that JWT on incoming requests instead of implementing session/password logic itself. Email verification, password reset, and rate-limiting on auth endpoints come from a system with far more security scrutiny on it than a first version we'd write ourselves.</p>
+    <p><strong>Card images:</strong> Cloudflare R2, as the design doc already specified &mdash; its zero-egress pricing matters specifically because listing photos get viewed far more often than they're uploaded.</p>
+    <p><strong>Auction/bid state:</strong> Upstash Redis, matching the design doc's Redis requirement for live auction timers and wallet locks, without managing a Redis instance by hand.</p>
+    <p><strong>Exit ramp, if you ever need one:</strong> because Supabase Auth's user table lives inside the same Postgres instance, moving off it later is a data migration, not a rewrite &mdash; export the user list, re-hash or force a password reset, and point the Go API at a self-rolled auth flow. That's a real project if it ever comes to it, but it's never a rewrite of the marketplace itself.</p>
+  </section>
+
+  <footer class="sources">
+    <h2 style="border:none;padding:0;font-size:1.1rem;">Sources</h2>
+    <ul class="sources">
+      <li><a href="https://checkthat.ai/brands/neon/pricing">Neon Pricing 2026: Total Cost &amp; Competitors Compared</a></li>
+      <li><a href="https://uibakery.io/blog/supabase-pricing">Supabase Pricing in 2026: Plans, Free Tier Limits &amp; Full Breakdown</a></li>
+      <li><a href="https://www.bytebase.com/dbcost/rds-pricing/">AWS RDS Pricing &mdash; Every Instance, On-Demand &amp; Reserved</a></li>
+      <li><a href="https://upstash.com/pricing">Upstash Redis Pricing</a></li>
+      <li><a href="https://www.promptstoproduct.com/clerk-pricing-explained">Clerk pricing: what you'll pay at 1K, 10K, 100K MAU</a></li>
+      <li><a href="https://frontegg.com/guides/aws-cognito-pricing">AWS Cognito Pricing Simplified: Tiers, MAUs &amp; User Pools</a></li>
+      <li><a href="https://egresscost.com/cloudflare/">Cloudflare R2 Pricing 2026: $0 Egress Fees, Storage &amp; Operations</a></li>
+      <li><a href="https://northflank.com/blog/railway-vs-render">Railway vs Render: which platform fits your workload in 2026?</a></li>
+    </ul>
+  </footer>
+
+</article>

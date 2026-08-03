@@ -1,0 +1,25 @@
+openapi: 3.0.3
+info:
+  title: AuctionHous - TCG API
+  version: 0.1.0
+  description: >
+    Single source of truth for the HTTP contract between apps/web and
+    apps/api. Generate the Go server types (oapi-codegen) and the TypeScript
+    client (openapi-typescript) from this file as endpoints are added —
+    do not hand-write duplicate types on either side.
+paths:
+  /healthz:
+    get:
+      summary: Liveness check
+      operationId: getHealthz
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok

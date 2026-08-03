@@ -1,0 +1,34 @@
+# OS
+.DS_Store
+
+# Env files — never commit secrets (Stripe keys, DB URLs, etc.)
+.env
+.env.*
+!.env.example
+
+# Go
+apps/api/bin/
+*.exe
+*.test
+
+# Node (apps/web has its own .gitignore for Next.js-specific paths;
+# this catches node_modules anywhere else in the monorepo, e.g. packages/*)
+node_modules/
+
+# Editor
+.vscode/
+.idea/
+
+# Python (apps/cardvision)
+__pycache__/
+*.pyc
+.venv/
+
+# CardVision local dev data — MinIO's own binary object store, dev server
+# logs. Runtime state, not source.
+apps/cardvision/.minio-data/
+*.log
+
+# Claude Code local-only state
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
