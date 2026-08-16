@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"auctionhous-tcg/api/internal/notification"
 )
 
 var (
@@ -117,6 +119,10 @@ func attemptBid(ctx context.Context, pool *pgxpool.Pool, listingID, bidderID str
 
 	var newPrice int64
 	var newHighBidder string
+	// Set only when this bid displaces a previous high bidder — that's the
+	// one case worth a persistent "you've been outbid" notification (see
+	// the default case below).
+	var outbidUserID *string
 
 	switch {
 	case highBidderID == nil:
@@ -155,7 +161,13 @@ func attemptBid(ctx context.Context, pool *pgxpool.Pool, listingID, bidderID str
 			// New bidder takes the lead, paying just enough to beat the
 			// previous leader's max (classic second-price proxy behavior),
 			// rounded up to a clean grid point rather than leaderMax's exact
-			// odd-cents value.
+			// odd-cents value. The old leader (still *highBidderID here,
+			// captured before newHighBidder overwrites it) just lost the
+			// lead without taking any action themselves — that's exactly
+			// the case worth notifying, unlike a challenger whose own
+			// fresh bid didn't take the lead (they're already looking at
+			// the result of their own action).
+			outbidUserID = highBidderID
 			newHighBidder = bidderID
 			newPrice = roundUpPastGrid(leaderMax)
 			if newPrice > maxBidCents {
@@ -191,6 +203,12 @@ func attemptBid(ctx context.Context, pool *pgxpool.Pool, listingID, bidderID str
 		values ($1, $2, $3)
 	`, listingID, bidderID, maxBidCents); err != nil {
 		return nil, fmt.Errorf("insert bid: %w", err)
+	}
+
+	if outbidUserID != nil {
+		if err := notification.Create(ctx, tx, *outbidUserID, notification.KindOutbid, listingID); err != nil {
+			return nil, fmt.Errorf("notify outbid: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

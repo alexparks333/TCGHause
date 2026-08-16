@@ -1,16 +1,18 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ChevronRight, ShieldCheck, Truck, Check } from "lucide-react";
+import { ChevronRight, ShieldCheck, Truck } from "lucide-react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import ListingGallery from "@/components/ListingGallery";
 import SellerCard from "@/components/SellerCard";
 import ItemSpecifics from "@/components/ItemSpecifics";
 import ListingSection from "@/components/ListingSection";
-import BidBox from "@/components/BidBox";
+import AuctionPriceBox from "@/components/AuctionPriceBox";
+import BuyNowButton from "@/components/BuyNowButton";
+import SoldBanner from "@/components/SoldBanner";
 import { getListing, getActiveListings, getWatchStatus, getMyWatchedIds, getMyBids } from "@/lib/api";
-import { formatPrice, formatTimeLeft, type MyBid } from "@/lib/types";
-import { getCurrentSession } from "@/lib/session";
+import { formatPrice, type MyBid } from "@/lib/types";
+import { getLocalSession } from "@/lib/session";
 
 export default async function ListingPage({
   params,
@@ -18,20 +20,24 @@ export default async function ListingPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const listing = await getListing(id);
+
+  // getListing and getLocalSession don't depend on each other, so they run
+  // together instead of stacking — this page never displays verified
+  // identity (email/avatar/name), only compares ids (isOwner) and reads
+  // the access_token, so the fast local cookie read is enough here; no
+  // need for getCurrentSession()'s slower getUser() network verification.
+  const [listing, local] = await Promise.all([getListing(id), getLocalSession()]);
   if (!listing) notFound();
 
-  const { session, user: currentUser } = await getCurrentSession();
-  const isOwner = currentUser?.id === listing.sellerId;
-  const hasEnded = listing.endsAt ? new Date(listing.endsAt).getTime() < Date.now() : false;
+  const isOwner = local?.userId === listing.sellerId;
 
-  // None of these four depend on each other — only on `session`/`listing`,
+  // None of these four depend on each other — only on `local`/`listing`,
   // both already resolved — so they run in parallel instead of as four
   // separate sequential round trips.
   const [watchStatus, watchedIds, myBids, moreFromSellerRaw] = await Promise.all([
-    session ? getWatchStatus(listing.id, session.access_token).catch(() => null) : Promise.resolve(null),
-    session ? getMyWatchedIds(session.access_token).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
-    session ? getMyBids(session.access_token).catch(() => [] as MyBid[]) : Promise.resolve([] as MyBid[]),
+    local ? getWatchStatus(listing.id, local.accessToken).catch(() => null) : Promise.resolve(null),
+    local ? getMyWatchedIds(local.accessToken).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
+    local ? getMyBids(local.accessToken).catch(() => [] as MyBid[]) : Promise.resolve([] as MyBid[]),
     getActiveListings({ sellerId: listing.sellerId }),
   ]);
   const myBidsByListingId = new Map(myBids.map((b) => [b.listing.id, b]));
@@ -61,7 +67,7 @@ export default async function ListingPage({
               imageUrls={listing.imageUrls ?? []}
               watcherCount={watchStatus?.watcherCount ?? listing.watcherCount}
               initialWatching={watchStatus?.watching ?? false}
-              isLoggedIn={Boolean(currentUser)}
+              isLoggedIn={Boolean(local)}
               game={listing.game}
               title={listing.title}
             />
@@ -96,43 +102,13 @@ export default async function ListingPage({
           <aside className="flex flex-col gap-4">
             <div className="rounded-xl border border-brand-border bg-white p-5">
               {listing.format === "auction" ? (
-                <>
-                  <p className="text-xs text-gray-500">
-                    {hasEnded ? "Auction ended — final price" : "Current bid"}
-                  </p>
-                  <p className="text-3xl font-bold text-gray-900">
-                    {formatPrice(listing.currentPriceCents ?? listing.startingBidCents ?? 0)}
-                  </p>
-                  <p className="mt-1 flex items-center justify-between text-sm">
-                    <span className="text-gray-500">{listing.bidCount ?? 0} bids</span>
-                    <span className="font-semibold text-brand-urgent">
-                      {listing.endsAt ? formatTimeLeft(listing.endsAt) : ""}
-                    </span>
-                  </p>
-
-                  {hasEnded ? (
-                    <p className="mt-4 text-sm text-gray-500">This auction has ended.</p>
-                  ) : isOwner ? (
-                    <p className="mt-4 text-sm text-gray-500">This is your listing.</p>
-                  ) : currentUser ? (
-                    <>
-                      {myBid?.status === "winning" && (
-                        <p className="mt-4 flex items-center gap-1.5 rounded-lg bg-brand-success/10 px-3 py-2 text-sm font-semibold text-brand-success">
-                          <Check size={16} /> You&apos;re the top bidder — winning up to{" "}
-                          {formatPrice(myBid.myMaxBidCents)}
-                        </p>
-                      )}
-                      <BidBox listing={listing} />
-                    </>
-                  ) : (
-                    <Link
-                      href="/login"
-                      className="mt-4 block rounded-lg bg-brand-navy px-4 py-2 text-center text-sm font-semibold text-white transition-colors hover:bg-brand-navy-light"
-                    >
-                      Sign in to bid
-                    </Link>
-                  )}
-                </>
+                <AuctionPriceBox
+                  listing={listing}
+                  isOwner={isOwner}
+                  isLoggedIn={Boolean(local)}
+                  currentUserId={local?.userId}
+                  myBid={myBid}
+                />
               ) : (
                 <>
                   <p className="text-xs text-gray-500">Buy it now</p>
@@ -140,14 +116,28 @@ export default async function ListingPage({
                     {formatPrice(listing.priceCents ?? 0)}
                   </p>
                   <div className="mt-4 flex flex-col gap-2">
-                    <button
-                      type="button"
-                      disabled
-                      title="Checkout isn't built yet"
-                      className="rounded-lg bg-brand-gold px-4 py-2.5 text-sm font-semibold text-white opacity-50"
-                    >
-                      Buy It Now (coming soon)
-                    </button>
+                    {listing.buyerId ? (
+                      <SoldBanner
+                        label={
+                          local?.userId === listing.buyerId
+                            ? listing.paidAt
+                              ? "You bought this — paid."
+                              : "You bought this."
+                            : "This listing has already sold."
+                        }
+                      />
+                    ) : isOwner ? (
+                      <p className="text-sm text-gray-500">This is your listing.</p>
+                    ) : local ? (
+                      <BuyNowButton listingId={listing.id} priceCents={listing.priceCents ?? 0} />
+                    ) : (
+                      <Link
+                        href="/login"
+                        className="rounded-lg bg-brand-navy px-4 py-2 text-center text-sm font-semibold text-white transition-colors hover:bg-brand-navy-light"
+                      >
+                        Sign in to buy
+                      </Link>
+                    )}
                   </div>
                 </>
               )}
@@ -160,11 +150,17 @@ export default async function ListingPage({
               </div>
               <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
                 <ShieldCheck size={14} />
-                Escrow protected, funds release after delivery confirmation
+                Payment protected — released to the seller after your delivery window
               </div>
             </div>
 
-            <SellerCard username={listing.sellerUsername} />
+            <SellerCard
+              username={listing.sellerUsername}
+              tier={listing.sellerTier}
+              sellerId={listing.sellerId}
+              listingId={listing.id}
+              canMessage={Boolean(local) && !isOwner}
+            />
           </aside>
         </div>
       </div>
@@ -175,7 +171,7 @@ export default async function ListingPage({
             title={`More from ${listing.sellerUsername ?? "this seller"}`}
             items={moreFromSeller}
             watchedIds={watchedIds}
-            isLoggedIn={Boolean(session)}
+            isLoggedIn={Boolean(local)}
             myBidsByListingId={myBidsByListingId}
           />
         </div>

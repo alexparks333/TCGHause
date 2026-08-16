@@ -49,3 +49,41 @@ export async function deleteListingPhoto(url: string): Promise<void> {
   const supabase = createClient();
   await supabase.storage.from(BUCKET).remove([path]);
 }
+
+const EVIDENCE_BUCKET = "order-evidence";
+
+// Uploads shipping/arrival evidence straight to Supabase Storage, same
+// pattern as uploadListingPhoto above — scoped to the order's own folder
+// ({order_id}/...), not the uploader's, since the RLS policy on this
+// bucket (migration 0024_evidence) checks the uploader is actually a
+// participant (buyer or seller) in that specific order. Record the
+// resulting URL via lib/api.ts's addOrderEvidence right after this
+// resolves — this function only touches Storage, never the order record.
+export async function uploadOrderEvidence(orderId: string, file: File): Promise<string> {
+  if (!ALLOWED_TYPES.includes(file.type)) {
+    throw new Error("Photos must be JPEG, PNG, or WebP.");
+  }
+  if (file.size > MAX_BYTES) {
+    throw new Error("Photos must be under 10MB.");
+  }
+
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error("You must be signed in to upload photos.");
+  }
+
+  const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const path = `${orderId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+
+  const { error } = await supabase.storage.from(EVIDENCE_BUCKET).upload(path, file, {
+    cacheControl: "3600",
+    upsert: false,
+  });
+  if (error) throw new Error(error.message);
+
+  const { data } = supabase.storage.from(EVIDENCE_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}

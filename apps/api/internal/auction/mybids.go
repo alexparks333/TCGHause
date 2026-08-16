@@ -57,17 +57,29 @@ func MyBids(ctx context.Context, pool *pgxpool.Pool, bidderID string) ([]MyBid, 
 		return nil, err
 	}
 
+	listingIDs := make([]string, len(found))
+	for i, rw := range found {
+		listingIDs[i] = rw.listingID
+	}
+	listingsByID, err := listing.GetMany(ctx, pool, listingIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get listings: %w", err)
+	}
+
 	out := []MyBid{}
 	for _, rw := range found {
-		lst, err := listing.Get(ctx, pool, rw.listingID)
-		if err != nil {
-			return nil, fmt.Errorf("get listing %s: %w", rw.listingID, err)
+		lst, ok := listingsByID[rw.listingID]
+		if !ok {
+			// A bid's auction_listing_id has a foreign-key reference to
+			// listings — this shouldn't be reachable, but skip rather than
+			// 500 the whole page over one row if it somehow ever is.
+			continue
 		}
 		status := "outbid"
 		if rw.highBidderID != nil && *rw.highBidderID == bidderID {
 			status = "winning"
 		}
-		out = append(out, MyBid{Listing: *lst, MyMaxBidCents: rw.myMax, Status: status})
+		out = append(out, MyBid{Listing: lst, MyMaxBidCents: rw.myMax, Status: status})
 	}
 	return out, nil
 }

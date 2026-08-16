@@ -4,29 +4,74 @@ import { Search, User } from "lucide-react";
 import TopBar from "./TopBar";
 import CategoryNav from "./CategoryNav";
 import AccountMenu from "./AccountMenu";
+import NotificationBell from "./NotificationBell";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
-import { getListingCounts, getMe } from "@/lib/api";
+import { getListingCounts, getMe, getMyNotifications, getMyThreads } from "@/lib/api";
 import { getCurrentSession } from "@/lib/session";
 import { paramStr, type SearchParams } from "@/lib/search-params";
 
 export default async function Header({
   searchParams = {},
+  sticky = false,
+  variant = "full",
 }: {
   searchParams?: SearchParams;
+  // The header (top bar, search, and category nav) scrolls away normally
+  // everywhere by default, per product decision — it should never pin to
+  // the top and follow the user down the page. Pass sticky explicitly on
+  // the rare page that wants the old pinned behavior.
+  sticky?: boolean;
+  // "logo-only" strips everything down to just the clickable logo — no
+  // top bar, search, category nav, or account/notification controls.
+  // Used by focused single-task flows (the Sell wizard) where the full
+  // nav is pure distraction and the vertical space is better spent on the
+  // form itself. Skips every session/API fetch below entirely, not just
+  // hiding their output, since none of it is needed to render a logo.
+  variant?: "full" | "logo-only";
 } = {}) {
+  if (variant === "logo-only") {
+    return (
+      <header className={`bg-white shadow-sm ${sticky ? "sticky top-0 z-40" : ""}`}>
+        <div className="flex items-center px-10 py-0.5 sm:px-12 lg:px-14">
+          <Link href="/" className="flex shrink-0 items-center gap-1">
+            <Image
+              src="/logo-v3.png"
+              alt="AuctionHous"
+              width={80}
+              height={80}
+              priority
+              unoptimized
+              className="h-[80px] w-[80px]"
+            />
+            <span className="text-2xl font-bold tracking-tight text-brand-navy">
+              AuctionHous <span className="text-brand-gold">TCG</span>
+            </span>
+          </Link>
+        </div>
+      </header>
+    );
+  }
+
   const { session, user } = isSupabaseConfigured()
     ? await getCurrentSession()
     : { session: null, user: null };
-  // getMe and getListingCounts don't depend on each other — running them
-  // in parallel instead of sequentially is what actually made this page
-  // (and everywhere else Header renders, i.e. every page) noticeably
-  // faster. username only lives in public.users (the Go API), not in
-  // Supabase's own user_metadata — a Go API outage degrades to
-  // fullName/email in AccountMenu rather than breaking the header
-  // entirely, same reasoning for both .catch()es below.
-  const [me, counts] = await Promise.all([
+  // getMe, getListingCounts, getMyNotifications, and getMyThreads don't
+  // depend on each other — running them in parallel instead of
+  // sequentially is what actually made this page (and everywhere else
+  // Header renders, i.e. every page) noticeably faster. username only
+  // lives in public.users (the Go API), not in Supabase's own
+  // user_metadata — a Go API outage degrades to fullName/email in
+  // AccountMenu (and an empty bell/message badge) rather than breaking the
+  // header entirely, same reasoning for all four .catch()es below.
+  const [me, counts, notifications, messages] = await Promise.all([
     session ? getMe(session.access_token).catch(() => null) : Promise.resolve(null),
     getListingCounts().catch(() => ({}) as Record<string, number>),
+    session
+      ? getMyNotifications(session.access_token).catch(() => ({ notifications: [], unreadCount: 0 }))
+      : Promise.resolve({ notifications: [], unreadCount: 0 }),
+    session
+      ? getMyThreads(session.access_token).catch(() => ({ threads: [], unreadCount: 0 }))
+      : Promise.resolve({ threads: [], unreadCount: 0 }),
   ]);
   const activeQuery = paramStr(searchParams, "q");
   // Every other active filter gets carried forward as a hidden input when
@@ -35,20 +80,20 @@ export default async function Header({
   const carryForwardKeys = Object.keys(searchParams).filter((k) => k !== "q");
 
   return (
-    <header className="sticky top-0 z-40 bg-white shadow-sm">
-      <TopBar />
-      <div className="flex items-center gap-3 py-3 pl-3 pr-10 sm:gap-4 sm:pl-4 sm:pr-12 lg:pl-5 lg:pr-14">
-        <Link href="/" className="flex shrink-0 items-center gap-2">
+    <header className={`bg-white shadow-sm ${sticky ? "sticky top-0 z-40" : ""}`}>
+      <TopBar tier={me?.tier ?? null} />
+      <div className="flex items-center gap-3 py-0.5 pl-3 pr-10 sm:gap-4 sm:pl-4 sm:pr-12 lg:pl-5 lg:pr-14">
+        <Link href="/" className="flex shrink-0 items-center gap-1">
           <Image
             src="/logo-v3.png"
             alt="AuctionHous"
-            width={58}
-            height={58}
+            width={80}
+            height={80}
             priority
             unoptimized
-            className="h-[58px] w-[58px]"
+            className="h-[80px] w-[80px]"
           />
-          <span className="hidden text-lg font-bold tracking-tight text-brand-navy sm:inline">
+          <span className="hidden text-2xl font-bold tracking-tight text-brand-navy sm:inline">
             AuctionHous <span className="text-brand-gold">TCG</span>
           </span>
         </Link>
@@ -78,12 +123,19 @@ export default async function Header({
 
         <nav className="ml-auto flex items-center gap-0.5 sm:gap-1">
           {user ? (
-            <AccountMenu
-              email={user.email ?? "?"}
-              username={me?.username ?? null}
-              fullName={user.user_metadata?.full_name ?? user.user_metadata?.name ?? null}
-              avatarUrl={user.user_metadata?.avatar_url ?? user.user_metadata?.picture}
-            />
+            <>
+              <NotificationBell
+                initialNotifications={notifications.notifications}
+                initialUnreadCount={notifications.unreadCount}
+              />
+              <AccountMenu
+                email={user.email ?? "?"}
+                username={me?.username ?? null}
+                fullName={user.user_metadata?.full_name ?? user.user_metadata?.name ?? null}
+                avatarUrl={user.user_metadata?.avatar_url ?? user.user_metadata?.picture}
+                unreadMessageCount={messages.unreadCount}
+              />
+            </>
           ) : (
             <Link
               href="/login"

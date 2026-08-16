@@ -1,13 +1,25 @@
-// Command worker runs scheduled/background jobs. Auction close (this file)
-// is the first one wired up: escrow release checks and seller-tier
-// recomputation (CLAUDE.md §5.4) are still unbuilt — internal/escrow and
-// internal/seller are doc-only stubs, nothing to schedule yet.
+// Command worker runs scheduled/background jobs: auction close, the
+// order-lifecycle timers from design doc v2 §5.2 (order_timers.go), seller-
+// tier recomputation (tier_recompute.go, design doc v2 §3, CLAUDE.md §5.4),
+// and claim auto-escalation (claim_timer.go, design doc v2 §9.1).
+//
+// Deliberately NOT here: payout batching. It used to run on a timer
+// (payout_timer.go, removed) that swept every RELEASED order out to the
+// seller's bank automatically — but that silently defeated the whole
+// point of the Withdraw page's paid Instant option (internal/payout.
+// TriggerInstantPayout): if funds got auto-paid-out the instant they
+// were released, a seller could never actually choose to pay for speed,
+// since the free path had already fired first. Every payout on this
+// platform is now a direct, seller-initiated click (Standard or Instant,
+// see internal/payout.TriggerStandardPayout/TriggerInstantPayout) — no
+// background sweep exists that could race ahead of that choice.
 package main
 
 import (
 	"context"
 	"log"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,14 +27,17 @@ import (
 	"github.com/joho/godotenv"
 
 	"auctionhous-tcg/api/internal/auction"
+	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/platform"
 )
 
-// closeInterval is how often the worker checks for ended auctions. There's
-// no soft-close (CLAUDE.md §6.1), so there's no benefit to polling faster
-// than a buyer would notice — this just bounds how long an auction can sit
-// "ended but not yet marked ended" after its clock runs out.
-const closeInterval = 15 * time.Second
+// closeInterval is how often the worker checks for ended auctions. This is
+// the actual bottleneck for "how fast does the winner get decided" — the
+// win/sale celebration (internal/auction/celebration.go) can't exist until
+// outcome = 'sold' is set, which only happens here. The query itself is a
+// cheap indexed lookup (auctions_pending_close_idx), so there's no real
+// cost to polling this often even at production scale.
+const closeInterval = 2 * time.Second
 
 func main() {
 	// Best-effort, same as cmd/api: a real deployment sets env vars
@@ -43,8 +58,35 @@ func main() {
 	}
 	defer pool.Close()
 
-	log.Printf("worker: starting, closing ended auctions every %s", closeInterval)
-	runCloseLoop(ctx, pool)
+	paymentClient := payment.NewClient(cfg.StripeSecretKey)
+
+	log.Printf("worker: starting, closing ended auctions every %s, order timers every %s, tier recompute every %s, claim timers every %s",
+		closeInterval, orderTimerInterval, tierRecomputeInterval, claimTimerInterval)
+
+	// All four loops run concurrently and block until ctx is cancelled — a
+	// sync.WaitGroup (not just spawning them as bare goroutines) so main()
+	// doesn't return, and defer pool.Close() above doesn't fire, until all
+	// four have actually finished shutting down.
+	var wg sync.WaitGroup
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		runCloseLoop(ctx, pool)
+	}()
+	go func() {
+		defer wg.Done()
+		runOrderTimersLoop(ctx, pool, paymentClient)
+	}()
+	go func() {
+		defer wg.Done()
+		runTierRecomputeLoop(ctx, pool)
+	}()
+	go func() {
+		defer wg.Done()
+		runClaimTimerLoop(ctx, pool, paymentClient)
+	}()
+	wg.Wait()
+
 	log.Println("worker: shutting down")
 }
 

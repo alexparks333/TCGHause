@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "mobile",
+    "name": "AuctionHous",
     "slug": "auctionhaus",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -36,13 +36,22 @@
           "imageWidth": 76
         }
       ],
-      "expo-web-browser",
       [
         "expo-image-picker",
         {
           "photosPermission": "Used to pick front/back card photos for scanning.",
           "cameraPermission": "Used to take front/back card photos for scanning."
         }
+      ],
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.977058411603-j5j34u8v3d64bv8nke5p4sb8pd670rtt"
+        }
+      ],
+      [
+        "@stripe/stripe-react-native",
+        {}
       ]
     ],
     "experiments": {

@@ -8,6 +8,7 @@ import { ReviewsSection } from '@/components/account/reviews-section';
 import { StarRating } from '@/components/account/star-rating';
 import { UsernameSection } from '@/components/account/username-section';
 import { DevQuickSwitch } from '@/components/dev-quick-switch';
+import { Hero } from '@/components/hero';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Brand } from '@/constants/brand';
@@ -101,6 +102,8 @@ export default function AccountScreen() {
               </Pressable>
             )}
           </View>
+
+          {me && <Hero tier={me.tier} />}
 
           {error && (
             <ThemedText type="small" style={styles.error}>

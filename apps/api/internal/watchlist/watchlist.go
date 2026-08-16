@@ -59,8 +59,20 @@ func Remove(ctx context.Context, pool *pgxpool.Pool, userID, listingID string) e
 // heart in one query, instead of each ListingCard fetching its own status
 // client-side (which is both N+1 and reintroduces the same client-side
 // race that caused the original "watching doesn't save" bug).
+//
+// Scoped to l.status = 'active' — a watch row itself is never deleted just
+// because a listing stopped being active (its watcherCount stays a real
+// historical fact, e.g. on a sold listing's own page), but nothing that's
+// no longer for sale — ended, sold, or manually cancelled — should keep
+// showing up on the Watchlist page or anywhere else this drives a heart
+// icon's initial state.
 func MyWatchedListingIDs(ctx context.Context, pool *pgxpool.Pool, userID string) ([]string, error) {
-	rows, err := pool.Query(ctx, `select listing_id from watchlist where user_id = $1`, userID)
+	rows, err := pool.Query(ctx, `
+		select w.listing_id
+		from watchlist w
+		join listings l on l.id = w.listing_id
+		where w.user_id = $1 and l.status = 'active'
+	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("query my watchlist: %w", err)
 	}

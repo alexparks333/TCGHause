@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 const ACCOUNTS = [
@@ -97,6 +98,12 @@ export default function DevQuickSwitch({
         })}
       </div>
       {error && <p className="max-w-[220px] text-brand-urgent">{error}</p>}
+      <Link
+        href="/dev/quick-list"
+        className="text-amber-800 underline decoration-dotted underline-offset-2 hover:text-amber-900"
+      >
+        Quick list (no photos)
+      </Link>
     </div>
   );
 }

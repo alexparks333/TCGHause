@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getCurrentSession } from "@/lib/session";
+import { getLocalSession } from "@/lib/session";
 import { getMe } from "@/lib/api";
 import ClaimUsernameForm from "./ClaimUsernameForm";
 
@@ -11,12 +11,15 @@ export default async function ClaimUsernamePage({
   const { next } = await searchParams;
   const nextPath = next || "/";
 
-  const { session } = await getCurrentSession();
-  if (!session) {
+  // Just the token — apps/api's own /me endpoint independently verifies
+  // the JWT, so there's nothing to gain from a slower verified
+  // getCurrentSession() call just to redirect an actually-logged-out user.
+  const local = await getLocalSession();
+  if (!local) {
     redirect("/login");
   }
 
-  const me = await getMe(session.access_token).catch(() => null);
+  const me = await getMe(local.accessToken).catch(() => null);
   if (me?.username) {
     // Already claimed — don't show the form again.
     redirect(nextPath);

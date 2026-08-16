@@ -82,3 +82,136 @@ body {
     animation: none;
   }
 }
+
+/* CelebrationToast (components/CelebrationToast.tsx): the "Bid Won!" /
+   "Item Sold!" burst that plays once per win/sale, then crossfades into a
+   compact card showing what was actually won/sold. */
+@keyframes celebration-burst-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.3) translateY(10px);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.08) translateY(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.animate-celebration-burst-in {
+  animation: celebration-burst-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes celebration-float-up {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(0.8);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-60px) scale(1.1);
+  }
+}
+.animate-celebration-float-up {
+  animation: celebration-float-up 1.4s ease-out forwards;
+}
+
+@keyframes celebration-fade-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+.animate-celebration-fade-out {
+  animation: celebration-fade-out 0.3s ease-in forwards;
+}
+
+@keyframes celebration-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-celebration-reveal-in {
+  animation: celebration-reveal-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes celebration-slide-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+.animate-celebration-slide-out {
+  animation: celebration-slide-out 0.3s ease-in forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-celebration-burst-in,
+  .animate-celebration-float-up,
+  .animate-celebration-fade-out,
+  .animate-celebration-reveal-in,
+  .animate-celebration-slide-out {
+    animation: none;
+  }
+}
+
+/* ListingCard (components/ListingCard.tsx): an auction's live countdown
+   hitting zero sweeps an "Ended" ribbon across the card, then the whole
+   card fades/shrinks out — the parent (ListingSection) removes it from
+   its list once this finishes, so the grid closes the gap naturally. */
+@keyframes ended-ribbon-sweep {
+  0% {
+    transform: translateX(-120%) rotate(-8deg);
+    opacity: 0;
+  }
+  60% {
+    transform: translateX(4%) rotate(-8deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(0) rotate(-8deg);
+    opacity: 1;
+  }
+}
+.animate-ended-ribbon {
+  animation: ended-ribbon-sweep 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@keyframes card-fade-collapse {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+.animate-card-fade-collapse {
+  animation: card-fade-collapse 0.35s ease-in forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-ended-ribbon,
+  .animate-card-fade-collapse {
+    animation: none;
+  }
+}

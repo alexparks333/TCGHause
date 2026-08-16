@@ -39,56 +39,75 @@ export function ListingCard({
   const winning = myBid?.status === 'winning' && !hasEnded;
 
   return (
-    <View style={styles.shadowWrap}>
-      <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressed]} onPress={onPress}>
-        <View>
-          <Image
-            source={listing.imageUrls[0]}
-            style={styles.image}
-            contentFit="cover"
-            transition={150}
-          />
-          {onToggleWatch && (
-            <Pressable hitSlop={8} style={styles.watchButton} onPress={onToggleWatch}>
-              <SymbolView
-                name={watching ? 'heart.fill' : 'heart'}
-                size={14}
-                tintColor={watching ? '#D64545' : '#65697A'}
-                fallback={null}
-              />
-            </Pressable>
-          )}
-        </View>
-        <View style={styles.info}>
-          <ThemedText numberOfLines={2} style={styles.title}>
-            {listing.title}
-          </ThemedText>
-          <ThemedText type="smallBold" style={styles.price}>
-            {price != null ? formatPrice(price) : '—'}
-          </ThemedText>
-          {listing.format === 'auction' && listing.endsAt && (
+    <View>
+      <View style={styles.shadowWrap}>
+        <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressed]} onPress={onPress}>
+          <View>
+            <Image
+              source={listing.imageUrls[0]}
+              style={styles.image}
+              contentFit="cover"
+              transition={150}
+            />
+            {onToggleWatch && (
+              <View style={styles.watchArea}>
+                {listing.watcherCount > 0 && (
+                  <View style={styles.watchCount}>
+                    <ThemedText style={styles.watchCountText}>{listing.watcherCount}</ThemedText>
+                  </View>
+                )}
+                <Pressable hitSlop={8} style={styles.watchButton} onPress={onToggleWatch}>
+                  <SymbolView
+                    name={watching ? 'heart.fill' : 'heart'}
+                    size={14}
+                    tintColor={watching ? '#D64545' : '#65697A'}
+                    fallback={null}
+                  />
+                </Pressable>
+              </View>
+            )}
+          </View>
+          <View style={styles.info}>
+            <ThemedText numberOfLines={2} style={styles.title}>
+              {listing.title}
+            </ThemedText>
+            <View style={styles.divider} />
+            <ThemedText type="smallBold" style={styles.price}>
+              {price != null ? formatPrice(price) : '—'}
+            </ThemedText>
+            {listing.format === 'auction' && listing.endsAt && (
+              <ThemedText themeColor="textSecondary" style={styles.meta}>
+                {formatTimeLeft(listing.endsAt)} · {listing.bidCount ?? 0} bids
+              </ThemedText>
+            )}
+            {listing.format === 'fixed' && (
+              <ThemedText themeColor="textSecondary" style={styles.meta}>
+                Buy It Now
+              </ThemedText>
+            )}
+            {listing.format === 'auction' && listing.buyItNowPriceCents != null && !hasEnded && (
+              <ThemedText numberOfLines={1} style={styles.buyItNow}>
+                Buy It Now {formatPrice(listing.buyItNowPriceCents)}
+              </ThemedText>
+            )}
             <ThemedText themeColor="textSecondary" style={styles.meta}>
-              {formatTimeLeft(listing.endsAt)} · {listing.bidCount ?? 0} bids
+              {listing.freeShipping ? 'Free shipping' : `+${formatPrice(listing.shippingCostCents)} shipping`}
             </ThemedText>
-          )}
-          {listing.format === 'fixed' && (
-            <ThemedText themeColor="textSecondary" style={styles.meta}>
-              Buy It Now
-            </ThemedText>
-          )}
-          {winning && (
-            <ThemedText numberOfLines={1} style={styles.winning}>
-              Top bidder · up to {formatPrice(myBid!.myMaxBidCents)}
-            </ThemedText>
-          )}
-          <ThemedText themeColor="textSecondary" style={styles.meta}>
-            {listing.freeShipping ? 'Free shipping' : `+${formatPrice(listing.shippingCostCents)} shipping`}
-          </ThemedText>
-          <ThemedText themeColor="textSecondary" style={styles.meta}>
-            {listing.watcherCount} watcher{listing.watcherCount === 1 ? '' : 's'}
+          </View>
+        </Pressable>
+      </View>
+      {/* Rendered in normal flow below the card, not overlapping it at all —
+          the previous "tucked behind the card, zIndex -1" version was still
+          getting fully covered instead of peeking out, so this drops the
+          overlap trick entirely: a small rounded pill sitting just under
+          the card, guaranteed visible. */}
+      {winning && (
+        <View style={styles.winningTag} pointerEvents="none">
+          <ThemedText numberOfLines={1} style={styles.winningTagText}>
+            You&rsquo;re Top Bidder · {formatPrice(myBid!.myMaxBidCents)}
           </ThemedText>
         </View>
-      </Pressable>
+      )}
     </View>
   );
 }
@@ -110,10 +129,31 @@ const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: Colors.light.backgroundElement,
   },
-  watchButton: {
+  watchArea: {
     position: 'absolute',
     top: Spacing.two,
     right: Spacing.two,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  watchCount: {
+    minWidth: 22,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: Radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.9)',
+  },
+  watchCountText: {
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: '700',
+    color: Colors.light.text,
+    includeFontPadding: false,
+  },
+  watchButton: {
     width: 28,
     height: 28,
     borderRadius: Radius.full,
@@ -131,7 +171,25 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     minHeight: 32,
   },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: Colors.light.border,
+    marginVertical: 3,
+  },
   price: { fontSize: 14 },
   meta: { fontSize: 11, lineHeight: 14 },
-  winning: { fontSize: 11, lineHeight: 14, color: Brand.navy, fontWeight: '600' },
+  buyItNow: { fontSize: 11, lineHeight: 14, color: Brand.gold, fontWeight: '700' },
+  // Deliberately outside/below the card itself, not inside its padded info
+  // block or clipped into its rounded body — a tiny standalone, fully
+  // rounded pill flush against the card's bottom edge, in normal flow (no
+  // overlap/zIndex trick — that kept ending up fully hidden).
+  winningTag: {
+    alignSelf: 'center',
+    marginTop: 0,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: 5,
+    backgroundColor: '#2E9E5B',
+  },
+  winningTagText: { color: '#ffffff', fontSize: 9, lineHeight: 11, fontWeight: '700' },
 });

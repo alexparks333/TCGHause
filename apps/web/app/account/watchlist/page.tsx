@@ -1,13 +1,16 @@
 import { getMyWatchedIds, getListing } from "@/lib/api";
-import { getCurrentSession } from "@/lib/session";
+import { getLocalSession } from "@/lib/session";
 import ListingCard from "@/components/ListingCard";
 import type { Listing } from "@/lib/types";
 
 export default async function WatchlistPage() {
-  const { session } = await getCurrentSession();
+  // Local cookie read, not a verified getCurrentSession()/getUser() call —
+  // app/account/layout.tsx already gates this whole route on a real
+  // verified session.
+  const local = await getLocalSession();
 
-  const watchedIds = session
-    ? await getMyWatchedIds(session.access_token).catch(() => new Set<string>())
+  const watchedIds = local
+    ? await getMyWatchedIds(local.accessToken).catch(() => new Set<string>())
     : new Set<string>();
 
   const listings = (
@@ -30,7 +33,7 @@ export default async function WatchlistPage() {
               key={listing.id}
               listing={listing}
               initialWatching
-              isLoggedIn={Boolean(session)}
+              isLoggedIn={Boolean(local)}
             />
           ))}
         </div>

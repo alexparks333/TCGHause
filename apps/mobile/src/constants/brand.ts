@@ -7,4 +7,6 @@ export const Brand = {
   goldLight: '#d4a537',
   surface: '#f7f8fa',
   border: '#e5e7eb',
+  success: '#047857',
+  urgent: '#dc2626',
 } as const;

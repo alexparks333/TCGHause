@@ -438,10 +438,9 @@ reason to.
 - **Frontend**: `lib/types.ts` is the one canonical `Listing` shape (mirrors the Go
   JSON exactly); `lib/api.ts` has the fetchers. Homepage, listing detail (including
   live bid placement via `BidBox`), Sell (`SellWizard`), Selling, Buying, and
-  Bids/Offers are all real. **Still mock, clearly labeled as such in code comments**:
-  Sold History, Buy History, and Messages (`lib/mock-account.ts`) — there's no Order
-  or messaging backend yet. Don't let real and mock data blur back together; when
-  Orders exist, Sold/Buy History become real the same way Buying/Selling did.
+  Bids/Offers are all real. Sold History and Buy History are real too (see
+  `internal/auction.MySales`/`MyPurchases`). Messages is also real now — see §6.15;
+  `lib/mock-account.ts` (the old `myMessages` placeholder) has been deleted.
 - **Fixed-price "Buy It Now" is a real listing with no real purchase path behind it
   yet** — the button on the listing page is intentionally disabled ("coming soon"),
   not wired to fake success. Checkout/payment is separate, larger work, and is now
@@ -616,6 +615,125 @@ a real filter, all URL-driven — no client-side filter state anywhere.
   filter" link instead — conflating the two would read as the marketplace being
   empty when it's actually just that one filtered slice.
 
+### 6.15 Buyer/seller messaging
+
+Not an eBay-specific mechanic so much as standard marketplace table stakes (My eBay's
+own Messages inbox is the closest analogue) — this replaced `lib/mock-account.ts`'s
+`myMessages`, the last still-mock account surface noted in §6.13/§8.
+
+- **One thread per unordered pair of users, not per listing.** `internal/message`
+  (`migrations/0028_messages`) stores `message_threads` with `participant_one <
+  participant_two` enforced by a check constraint plus a unique index on the pair —
+  two people only ever have one running conversation with each other, the way iMessage
+  or Gmail don't fork a new thread per topic. `listing_id` is just the context a thread
+  happened to start from (shown as "About: <title>" in the thread header), not part of
+  a thread's identity — messaging the same seller again from a different listing lands
+  in the same conversation. `POST /me/messages` (`StartThreadWithMessage`) finds-or-
+  creates the thread and sends the first message atomically, so a race between two
+  concurrent "message this seller" clicks can never create two threads for the same
+  pair (the unique index is what actually enforces this, not just the find-then-insert
+  logic in Go).
+- **Read state is per-participant-per-thread, not per-message.** `message_thread_reads`
+  (`thread_id, user_id, last_read_at`) means marking a whole conversation read is one
+  upsert, not an `UPDATE` over every row in it — same "derive, don't flip a flag per
+  row" shape as `notification.MarkAllRead`. **Opening a thread (`GET
+  /me/messages/{id}`) marks it read as a side effect** — there's no separate mark-read
+  click the way the notification bell has one; viewing a conversation IS reading it,
+  matching Gmail/iMessage. The unread badge counts unread *conversations*, not raw
+  message counts, for the same reason a Gmail unread badge doesn't count individual
+  emails within a thread.
+- **The unread badge appears in two places, both server-fetched.** `Header` fetches
+  `GET /me/messages` alongside notifications/listing counts and passes
+  `unreadMessageCount` into `AccountMenu` (a numbered badge next to "Messages" in the
+  dropdown, plus a small dot on the avatar trigger itself); `app/account/layout.tsx`
+  fetches it again and passes it into `AccountTabs` (the "Messages 3" subnav badge
+  visible while browsing anywhere under `/account`). Same "no client-only initial
+  state" reasoning as `NotificationBell`'s own badge — both are real numbers on first
+  paint, not a flash of zero.
+- **The inbox itself (`/account/messages`) is a two-pane client component
+  (`MessagesApp`), server-fetched for its initial state then kept current by
+  polling** — there's no websocket infra in this repo, so polling is the real-time
+  stand-in, same tradeoff as `NotificationBell`. The thread list polls every 15s
+  (matching the bell); an *open* thread polls faster (4s) since that's the pane where
+  "feels live" actually matters. Selecting a thread updates the URL
+  (`?thread=<id>`) via `router.replace` so a conversation is deep-linkable without a
+  full page nav. **The two-pane box fills whatever vertical space is left in
+  `AccountLayout`'s `flex-1 <main>`** (`h-full`/`flex-1 min-h-0` all the way down from
+  `account/messages/page.tsx` through `MessagesApp`), not a `calc(100vh-<magic
+  number>)` — a hardcoded constant drifted out of sync with the actual header/tabs
+  chrome above it during development (the composer ended up pushed below the
+  viewport, forcing the whole page to scroll instead of just the message pane), and
+  flex-fill doesn't have that failure mode since it never has to know the chrome's
+  height.
+- **Entry points, not a cold "start a new message" composer.** There's no user
+  directory/search feature in this codebase to message an arbitrary stranger, and
+  building one wasn't in scope — messaging starts from somewhere a seller is already
+  shown: `MessageSellerButton` (an inline expanding form, same toggle shape as
+  `ReviewForm`) on the listing detail page's `SellerCard` (only when the viewer is
+  logged in and isn't the listing's own seller) and on the seller profile page's
+  header. Both call `startMessageThread` and land the buyer straight in the real
+  conversation it created at `/account/messages?thread=<id>`.
+
+### 6.16 Sell wizard card autofill (TCG Haven catalog integration)
+
+Not an eBay mechanic — a cross-app data-sharing decision. **TCG Haven** (a separate app on
+the same machine/author) already maintains a scraped, admin-curated, multi-game card database
+in its own Firestore project (`tcghaven-85a34`), covering Pokémon, Disney Lorcana, and
+Riftbound — see that project's own "Admin Catalog" doc for the full read/write/caching design.
+Rather than re-scrape/re-curate the same data a second time, `internal/cardcatalog`
+**reads that catalog directly, read-only**, to power a "search for your card" box in the Sell
+wizard's Step 1 that autofills Set/Card Number/Rarity.
+
+- **Go API → TCG Haven's Firestore directly, server-side only** — chosen over the two
+  alternatives considered (browser talking to TCG Haven's Firestore directly with the Firebase
+  JS SDK; or calling TCG Haven's own Next.js `/api/cards/search` over HTTP). The browser-SDK
+  option would put a second app's Firebase config in `apps/web`'s bundle, breaking the one rule
+  this repo has been consistent about — the browser only ever holds Supabase config, every
+  other third-party credential lives server-side in Go (§6.12). The HTTP-to-TCG-Haven's-app
+  option would make Sell wizard autofill depend on that app's Next.js process being up, instead
+  of depending on Firestore itself (managed, always-on). Neither requires TCG Haven's own app
+  to be running at all — Firestore is the actual shared resource.
+- **Auth: a dedicated, read-only service account** (`roles/datastore.viewer`), never TCG
+  Haven's own write-capable "sync" account. Key file path is `CARD_CATALOG_CREDENTIALS_FILE`
+  (gitignored, see `.gitignore`'s `apps/api/secrets/` entry — never commit it).
+  `CARD_CATALOG_PROJECT_ID` is TCG Haven's project ID, not secret (it's a `NEXT_PUBLIC_*` value
+  in that app's own `.env.local`). Both env vars empty is a supported, graceful-degradation
+  state — same pattern as `SUPABASE_URL`/`STRIPE_SECRET_KEY`: `GET /catalog/search` just isn't
+  registered, and the Sell wizard's fields stay hand-typed.
+- **Trust-boundary caveat worth remembering**: Firestore IAM roles aren't collection-scoped —
+  the read-only service account can technically read *any* collection in TCG Haven's project,
+  including its per-user inventory data, not just `catalog/*`. Firestore Security Rules (which
+  scope by collection) only gate client-SDK/end-user reads, not a service account using the
+  Admin SDK. The actual boundary is `internal/cardcatalog`'s own code, which only ever queries
+  the fixed `catalog_snapshot`/`catalog`/`catalog_meta` collection names, never anything
+  parameterized from a request — mirrors how the Go API's own Postgres `postgres` role bypasses
+  Supabase RLS by design (§6.12), same "push the trust into our own code, not the remote store"
+  shape.
+- **Caching is a simpler cousin of TCG Haven's own design**, not a port of its exact
+  delta-sync mechanism. `internal/cardcatalog` reads TCG Haven's pre-sharded
+  `catalog_snapshot/{game}/chunks/*` (same chunks TCG Haven's own server reads on cold start)
+  and holds them in memory per game, doing a full re-read after a 2-minute TTL rather than
+  TCG Haven's finer-grained `updatedAt`-delta pull — this is a secondary, read-only consumer
+  where a full snapshot re-read is a handful of document reads either way, so the extra
+  complexity of parsing TCG Haven's serialized Firestore Timestamps for delta comparison
+  wasn't worth carrying over.
+- **Search ranking is a direct Go port of TCG Haven's `scoreMatch`/`parseSearchQuery`**
+  (`lib/api/catalog.ts` there → `internal/cardcatalog/search.go` here) — word-start prefix
+  matching only, never mid-word substring matching, same scoring weights (exact token +30,
+  prefix +15, tag hit +20, first-word bonus +10). Kept identical on purpose so results feel the
+  same as TCG Haven's own search, not a divergent second implementation.
+- **Only 3 of AuctionHous's 6 games have any catalog to draw from** — `games.go`'s `gameSlug`
+  maps `"Pokémon"`/`"Disney Lorcana"`/`"Riftbound"` to TCG Haven's slugs; MTG, Yu-Gi-Oh!, and
+  Sports Cards resolve to no suggestions (`GET /catalog/search` returns `[]`), not an error —
+  the frontend's `CardSearch` component (`Step1Details.tsx`) hides the search box entirely for
+  unsupported games rather than showing an empty, always-failing search field.
+- **Autofill is text fields only — never the card image.** Selecting a search result fills
+  `title`/`setName`/`cardNumber`/`rarity`, all still editable afterward. It deliberately does
+  not touch Step 2's photos: a listing's photos are the seller's own proof of the physical
+  card's actual condition (§6.13's photo requirement exists specifically to prevent
+  misrepresentation), so autofilling a stock catalog image would undermine the exact thing that
+  requirement is for.
+
 ---
 
 ## 7. Compliance flags (non-engineering, but architecture-shaping)
@@ -649,7 +767,7 @@ Account creation (done — see §6.12). Listing creation and auction bidding (do
 page, homepage/listing-detail/Buying/Selling/Bids-Offers all on live data, no mock
 listings left in the frontend — see §6.13). Category filtering + a basic real search
 box are also done (§6.14) — full relevance/price sorting and full-text search are
-still the v1 gap, per §6.7. Still to build: fixed-price checkout (the
+still the v1 gap, per §6.7. Buyer/seller messaging is done (§6.15). Still to build: fixed-price checkout (the
 "Buy It Now" button is a real listing but a disabled placeholder — no order/payment
 flow behind it yet), cart batching for sub-$20 singles, escrow state machine, seller
 Tier 1–3, feedback + detailed ratings, dispute resolution flow, cert-number grading

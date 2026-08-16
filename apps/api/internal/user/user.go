@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -40,28 +41,36 @@ type User struct {
 	Username  *string `json:"username"`
 	Bio       *string `json:"bio"`
 	CreatedAt string  `json:"createdAt"`
+	// Tier is design doc v2 §3's trust tier (internal/seller.Tier) —
+	// 'new' for every seller until they've completed enough orders to
+	// promote (internal/seller.RecomputeTier). Included on the plain User
+	// shape, not gated behind a separate seller-only endpoint, since a
+	// tier badge is meant to be publicly visible on a seller's profile
+	// (design doc v2 §2.7: "publish the full tier ladder openly").
+	Tier string `json:"tier"`
 }
 
 // PublicUser is what a seller's public profile page shows other users —
 // deliberately excludes Email, the entire point of the username feature
-// this builds on.
+// this builds on. Tier is intentionally still included — see User.Tier.
 type PublicUser struct {
 	ID        string  `json:"id"`
 	Username  *string `json:"username"`
 	Bio       *string `json:"bio"`
 	CreatedAt string  `json:"createdAt"`
+	Tier      string  `json:"tier"`
 }
 
 func (u *User) ToPublic() *PublicUser {
-	return &PublicUser{ID: u.ID, Username: u.Username, Bio: u.Bio, CreatedAt: u.CreatedAt}
+	return &PublicUser{ID: u.ID, Username: u.Username, Bio: u.Bio, CreatedAt: u.CreatedAt, Tier: u.Tier}
 }
 
 func Get(ctx context.Context, pool *pgxpool.Pool, id string) (*User, error) {
 	var u User
 	var createdAt time.Time
 	err := pool.QueryRow(ctx,
-		`select id, email, username, bio, created_at from users where id = $1`, id,
-	).Scan(&u.ID, &u.Email, &u.Username, &u.Bio, &createdAt)
+		`select id, email, username, bio, created_at, tier from users where id = $1`, id,
+	).Scan(&u.ID, &u.Email, &u.Username, &u.Bio, &createdAt, &u.Tier)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -80,8 +89,8 @@ func GetByUsername(ctx context.Context, pool *pgxpool.Pool, username string) (*U
 	var u User
 	var createdAt time.Time
 	err := pool.QueryRow(ctx,
-		`select id, email, username, bio, created_at from users where lower(username) = lower($1)`, username,
-	).Scan(&u.ID, &u.Email, &u.Username, &u.Bio, &createdAt)
+		`select id, email, username, bio, created_at, tier from users where lower(username) = lower($1)`, username,
+	).Scan(&u.ID, &u.Email, &u.Username, &u.Bio, &createdAt, &u.Tier)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -170,4 +179,25 @@ func RequireUsername(ctx context.Context, pool *pgxpool.Pool, userID string) err
 		return ErrNoUsername
 	}
 	return nil
+}
+
+// IsAdmin checks callerID's email against a comma-separated allowlist
+// (platform.Config.AdminEmails) — the minimal, no-real-admin-app stand-in
+// shared by internal/dispute's human-review routes and internal/metrics'
+// reporting page. Empty adminEmails means nobody is an admin, not that
+// everybody is.
+func IsAdmin(ctx context.Context, pool *pgxpool.Pool, adminEmails, callerID string) bool {
+	if adminEmails == "" {
+		return false
+	}
+	u, err := Get(ctx, pool, callerID)
+	if err != nil {
+		return false
+	}
+	for _, allowed := range strings.Split(adminEmails, ",") {
+		if strings.EqualFold(strings.TrimSpace(allowed), u.Email) {
+			return true
+		}
+	}
+	return false
 }

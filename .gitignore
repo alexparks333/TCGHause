@@ -11,6 +11,10 @@ apps/api/bin/
 *.exe
 *.test
 
+# Service account keys / other credential files dropped in locally
+# (e.g. apps/api/secrets/tcghaven-catalog-reader.json, CLAUDE.md §6.16)
+apps/api/secrets/
+
 # Node (apps/web has its own .gitignore for Next.js-specific paths;
 # this catches node_modules anywhere else in the monorepo, e.g. packages/*)
 node_modules/

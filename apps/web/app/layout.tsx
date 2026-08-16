@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import DevQuickSwitch from "@/components/DevQuickSwitch";
+import CelebrationWatcher from "@/components/CelebrationWatcher";
 import { getCurrentSession } from "@/lib/session";
 import "./globals.css";
 
@@ -17,7 +18,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "AuctionHous - TCG",
   description:
-    "A P2P marketplace and live auction platform for trading cards and graded slabs — 2% seller fees, escrow protected.",
+    "A P2P marketplace and live auction platform for trading cards and graded slabs — seller fees start at 7% + $0.30 and drop as low as 5.50% by seller tier, pay by bank and save.",
 };
 
 export default async function RootLayout({
@@ -37,7 +38,7 @@ export default async function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full scroll-smooth antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        {children}
+        <CelebrationWatcher>{children}</CelebrationWatcher>
         {isDev && (
           <DevQuickSwitch
             currentEmail={user?.email ?? null}

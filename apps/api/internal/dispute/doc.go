@@ -1,4 +1,7 @@
-// Package dispute implements the resolution-center state machine: opened ->
-// direct negotiation (48h) -> escalation -> admin evidence review -> decision
-// -> appeal window. See CLAUDE.md §6.5 and the design doc §6.
+// Package dispute implements the claims ladder from design doc v2 §9:
+// opened -> direct negotiation (48h) -> escalation -> auto-adjudication (for
+// clear cases) or human review -> decision -> one appeal -> closed. Liability
+// (§9.3's matrix — who's on the hook for a given reason code and evidence
+// state) is encoded directly on claims.liable_party, not re-derived by
+// whoever's looking at a case.
 package dispute

@@ -1,48 +1,43 @@
-import { makeRedirectUri } from 'expo-auth-session';
-import * as QueryParams from 'expo-auth-session/build/QueryParams';
-import * as WebBrowser from 'expo-web-browser';
+import { GoogleSignin, isErrorWithCode, isSuccessResponse, statusCodes } from '@react-native-google-signin/google-signin';
 
 import { supabase } from './supabase';
 
-// Mirrors apps/web's GoogleSignInButton (CLAUDE.md §6.12) — same
-// Supabase project, same OAuth provider config, but the redirect leg is
-// necessarily different: web bounces through a real server route
-// (app/auth/callback/route.ts) after Supabase's fixed callback; native has
-// no server to receive that redirect, so the browser session itself hands
-// the token straight back to this function instead.
+// Mirrors apps/web's GoogleSignInButton (CLAUDE.md §6.12) in outcome (a
+// Supabase session), but the mechanism is deliberately different from web's
+// browser-redirect OAuth flow. The original mobile implementation used
+// expo-web-browser's openAuthSessionAsync, which opens iOS's
+// ASWebAuthenticationSession — that's what threw the system-level "'Mobile'
+// wants to use '<project-ref>.supabase.co' to sign in" consent dialog, since
+// ASWebAuthenticationSession is required by Apple to disclose exactly which
+// domain's browser session an app is about to share. Swapping to Google's
+// native SDK (GoogleSignin.signIn()) skips that browser session entirely
+// when the Google app is installed, or falls back to an in-app flow that
+// discloses the trusted "accounts.google.com" domain, not an opaque Supabase
+// project ref — both read as legitimate, unlike the old prompt. The ID token
+// it returns goes straight to Supabase's signInWithIdToken, so no redirect
+// leg, no custom URL scheme, no deep-link handling required at all.
 //
-// IMPORTANT: this requires a custom development build, not Expo Go — a
-// custom URL scheme (app.json's "scheme") can't deep-link back into an app
-// hosted inside Expo Go's own shared container. It'll compile and run, but
-// the redirect leg will fail to return to the app when tested via Expo Go.
+// Requires a native rebuild (`npx expo prebuild --clean` + `npx expo run:ios`)
+// — this is native-module code, it will not run inside Expo Go or an old
+// dev-client build made before this package was added.
+GoogleSignin.configure({
+  webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+});
+
 export async function signInWithGoogle(): Promise<{ error: string | null }> {
-  const redirectTo = makeRedirectUri();
-  console.log('[google-auth] redirectTo:', redirectTo);
+  try {
+    await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+    const response = await GoogleSignin.signIn();
+    if (!isSuccessResponse(response)) return { error: null };
 
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: { redirectTo, skipBrowserRedirect: true },
-  });
-  if (error) return { error: error.message };
-  if (!data.url) return { error: 'No OAuth URL returned' };
-  console.log('[google-auth] oauth url:', data.url);
+    const idToken = response.data.idToken;
+    if (!idToken) return { error: 'Google did not return an ID token' };
 
-  const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-  console.log('[google-auth] session result:', JSON.stringify(result));
-  if (result.type !== 'success' || !result.url) {
-    return result.type === 'cancel' ? { error: null } : { error: 'Sign-in was not completed' };
+    const { error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: idToken });
+    return { error: error?.message ?? null };
+  } catch (err) {
+    if (isErrorWithCode(err) && err.code === statusCodes.SIGN_IN_CANCELLED) return { error: null };
+    return { error: err instanceof Error ? err.message : 'Google sign-in failed' };
   }
-
-  return createSessionFromUrl(result.url);
-}
-
-export async function createSessionFromUrl(url: string): Promise<{ error: string | null }> {
-  const { params, errorCode } = QueryParams.getQueryParams(url);
-  if (errorCode) return { error: errorCode };
-
-  const { access_token, refresh_token } = params;
-  if (!access_token || !refresh_token) return { error: null };
-
-  const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-  return { error: error?.message ?? null };
 }

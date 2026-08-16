@@ -1,6 +1,8 @@
 "use client";
 
-import PhotoSlot from "./PhotoSlot";
+import { useState } from "react";
+import PhoneUploadPanel from "./PhoneUploadPanel";
+import SortablePhotoGrid from "./SortablePhotoGrid";
 import type { WizardData, UpdateField } from "../SellWizard";
 
 export default function Step2Photos({
@@ -14,43 +16,31 @@ export default function Step2Photos({
   onNext: () => void;
   onBack: () => void;
 }) {
-  const canProceed = Boolean(data.photoFront || data.photoBack);
+  const canProceed = data.photos.length > 0;
+  // A stable setState reference — passed straight to PhoneUploadPanel's
+  // onPhotosFound so its polling effect's dependency array stays stable
+  // across Step2Photos re-renders (no inline arrow wrapper here).
+  const [phonePhotos, setPhonePhotos] = useState<string[]>([]);
 
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h2 className="text-lg font-semibold text-gray-900">Add photos</h2>
-        <p className="text-sm text-gray-500">
-          Clear, well-lit photos build buyer trust and cut down on condition disputes.
-          At least one photo is required — both sides is better.
+        <h2 className="text-xl font-semibold text-gray-900">Add photos</h2>
+        <p className="mt-1 text-sm text-gray-500">
+          Clear, well-lit photos build buyer trust and cut down on condition disputes. At
+          least one photo is required. Drag multiple photos in at once, then drag them
+          into the order you want — the first is the cover photo shown everywhere on the
+          site.
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-        <PhotoSlot
-          label="Front of card"
-          hint="Straight-on, good lighting"
-          url={data.photoFront}
-          onUploaded={(url) => update("photoFront", url)}
-          onRemoved={() => update("photoFront", null)}
-        />
-        <PhotoSlot
-          label="Back of card"
-          hint="Show the full back"
-          url={data.photoBack}
-          onUploaded={(url) => update("photoBack", url)}
-          onRemoved={() => update("photoBack", null)}
-        />
-        {data.isGraded && (
-          <PhotoSlot
-            label="Certification label"
-            hint="Close-up of the grading label"
-            url={data.photoCert}
-            onUploaded={(url) => update("photoCert", url)}
-            onRemoved={() => update("photoCert", null)}
-          />
-        )}
-      </div>
+      <PhoneUploadPanel onPhotosFound={setPhonePhotos} />
+
+      <SortablePhotoGrid
+        photos={data.photos}
+        onChange={(photos) => update("photos", photos)}
+        externalPhotos={phonePhotos}
+      />
 
       <div className="mt-2 flex justify-between">
         <button

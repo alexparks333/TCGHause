@@ -1,9 +1,15 @@
 import { getActiveListings, getMyWatchedIds } from "@/lib/api";
-import { getCurrentSession } from "@/lib/session";
+import { getLocalSession } from "@/lib/session";
 import ListingCard from "@/components/ListingCard";
 import type { Listing } from "@/lib/types";
 
+// A fixed-format listing has no Outcome at all (that field only exists on
+// the auctions table) — BuyerID set is its equivalent of "sold". "No Bids"
+// only ever applies to an auction that timed out with nobody watching.
 function outcomeBadge(listing: Listing): { label: string; sold: boolean } {
+  if (listing.format === "fixed") {
+    return listing.buyerId ? { label: "Sold", sold: true } : { label: "Unsold", sold: false };
+  }
   if (listing.outcome === "no_bids") return { label: "No Bids", sold: false };
   return { label: "Sold", sold: true };
 }
@@ -27,13 +33,26 @@ function ListingGrid({
             (() => {
               const { label, sold } = outcomeBadge(listing);
               return (
-                <span
-                  className={`self-start rounded-full px-2 py-0.5 text-[11px] font-semibold text-white ${
-                    sold ? "bg-brand-success" : "bg-brand-urgent"
-                  }`}
-                >
-                  {label}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`self-start rounded-full px-2 py-0.5 text-[11px] font-semibold text-white ${
+                      sold ? "bg-brand-success" : "bg-brand-urgent"
+                    }`}
+                  >
+                    {label}
+                  </span>
+                  {sold && (
+                    <span
+                      className={`self-start rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                        listing.paidAt
+                          ? "bg-brand-success/10 text-brand-success"
+                          : "bg-brand-gold/15 text-brand-gold"
+                      }`}
+                    >
+                      {listing.paidAt ? "Paid" : "Awaiting payment"}
+                    </span>
+                  )}
+                </div>
               );
             })()}
           <ListingCard
@@ -48,26 +67,29 @@ function ListingGrid({
 }
 
 export default async function SellingPage() {
-  const { session, user } = await getCurrentSession();
+  // Local cookie read, not a verified getCurrentSession()/getUser() call —
+  // app/account/layout.tsx already gates this whole route on a real
+  // verified session, and userId here is only ever used as a "which
+  // listings are mine" query filter, never an authorization decision. See
+  // lib/session.ts's LocalSession doc comment for why that's safe.
+  const local = await getLocalSession();
 
   const [mySelling, myFinished, watchedIds] = await Promise.all([
-    user ? getActiveListings({ sellerId: user.id }) : Promise.resolve([]),
-    user ? getActiveListings({ sellerId: user.id, finished: true }) : Promise.resolve([]),
-    session ? getMyWatchedIds(session.access_token).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
+    local ? getActiveListings({ sellerId: local.userId }) : Promise.resolve([]),
+    local ? getActiveListings({ sellerId: local.userId, finished: true }) : Promise.resolve([]),
+    local
+      ? getMyWatchedIds(local.accessToken).catch(() => new Set<string>())
+      : Promise.resolve(new Set<string>()),
   ]);
 
-  const isLoggedIn = Boolean(session);
-  // getActiveListings({ finished: true }) returns every ended auction of
-  // the seller's, not just auction-format ones with a real end — fixed-price
-  // listings never appear here since they have no ends_at to have passed.
-  const finishedAuctions = myFinished.filter((l) => l.format === "auction");
+  const isLoggedIn = Boolean(local);
 
   return (
     <div className="px-10 py-8 sm:px-12 lg:px-14">
       <h1 className="text-xl font-bold text-gray-900">Selling</h1>
       <p className="mt-1 text-sm text-gray-500">Your active listings.</p>
 
-      {mySelling.length === 0 && finishedAuctions.length === 0 ? (
+      {mySelling.length === 0 && myFinished.length === 0 ? (
         <p className="mt-6 text-sm text-gray-500">
           You don't have any active listings.{" "}
           <a href="/sell" className="font-medium text-brand-navy hover:underline">
@@ -88,11 +110,11 @@ export default async function SellingPage() {
 
           <section className="mt-8">
             <h2 className="text-sm font-semibold text-gray-900">Finished</h2>
-            {finishedAuctions.length === 0 ? (
-              <p className="mt-2 text-sm text-gray-500">No auctions have ended yet.</p>
+            {myFinished.length === 0 ? (
+              <p className="mt-2 text-sm text-gray-500">Nothing has ended yet.</p>
             ) : (
               <ListingGrid
-                listings={finishedAuctions}
+                listings={myFinished}
                 watchedIds={watchedIds}
                 isLoggedIn={isLoggedIn}
                 showOutcome

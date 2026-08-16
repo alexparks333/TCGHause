@@ -4,8 +4,8 @@ import Hero from "@/components/Hero";
 import ListingSection from "@/components/ListingSection";
 import FilterSidebar from "@/components/FilterSidebar";
 import Footer from "@/components/Footer";
-import { getActiveListings, getMyWatchedIds, getMyBids } from "@/lib/api";
-import { getCurrentSession } from "@/lib/session";
+import { getActiveListings, getMe, getMyWatchedIds, getMyBids } from "@/lib/api";
+import { getLocalSession } from "@/lib/session";
 import type { MyBid } from "@/lib/types";
 import { paramStr, paramNum, paramBool, type SearchParams } from "@/lib/search-params";
 
@@ -36,10 +36,18 @@ export default async function Home({
     timeLeftMinHours !== undefined ||
     timeLeftMaxHours !== undefined;
 
+  // Only the search box (not the category bubbles/other filters) switches
+  // into the eBay-style row layout — a plain category browse still gets
+  // the normal card grid, per product decision.
+  const isSearch = Boolean(q);
+
   // Independent fetches — listings don't depend on the session, and
   // watchlist/bids don't depend on each other, so all four run in
   // parallel instead of stacking up as separate round trips.
-  const [listings, { session }] = await Promise.all([
+  // getLocalSession() (a local cookie read, not a network round trip) is
+  // enough here — this page never displays verified identity, only the
+  // access_token and a plain isLoggedIn check.
+  const [listings, local] = await Promise.all([
     getActiveListings({
       game,
       search: q,
@@ -51,11 +59,16 @@ export default async function Home({
       timeLeftMinHours,
       timeLeftMaxHours,
     }),
-    getCurrentSession(),
+    getLocalSession(),
   ]);
-  const [watchedIds, myBids] = await Promise.all([
-    session ? getMyWatchedIds(session.access_token).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
-    session ? getMyBids(session.access_token).catch(() => [] as MyBid[]) : Promise.resolve([] as MyBid[]),
+  // getMe is wrapped in cache() (lib/api.ts) and Header fetches it too with
+  // the same access token in the same request, so this doesn't cost a
+  // second round trip to the Go API — it's what lets Hero show the
+  // viewer's real tier-based fee instead of a flat advertised number.
+  const [watchedIds, myBids, me] = await Promise.all([
+    local ? getMyWatchedIds(local.accessToken).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
+    local ? getMyBids(local.accessToken).catch(() => [] as MyBid[]) : Promise.resolve([] as MyBid[]),
+    local ? getMe(local.accessToken).catch(() => null) : Promise.resolve(null),
   ]);
   const myBidsByListingId = new Map(myBids.map((b) => [b.listing.id, b]));
 
@@ -82,8 +95,8 @@ export default async function Home({
           the moment a category or search filter narrows the view, per
           product decision, so filtered browsing reads as a results page,
           not a landing page with results tacked on underneath it. */}
-      {!isFiltered && <Hero featuredAuctions={featuredAuctions} />}
-      <div className="flex-1 py-6 pl-3 pr-10 sm:pl-4 sm:pr-12 lg:pl-5 lg:pr-14">
+      {!isFiltered && <Hero featuredAuctions={featuredAuctions} tier={me?.tier ?? null} />}
+      <div className="flex-1 py-2 pl-3 pr-10 sm:pl-4 sm:pr-12 lg:pl-5 lg:pr-14">
         <div className="flex flex-col gap-6 sm:flex-row sm:gap-8">
           <FilterSidebar searchParams={params} />
           <div className="min-w-0 flex-1">
@@ -108,6 +121,15 @@ export default async function Home({
                   )}
                 </p>
               </div>
+            ) : isSearch ? (
+              <ListingSection
+                title={`${listings.length} result${listings.length === 1 ? "" : "s"} for "${q}"`}
+                items={listings}
+                watchedIds={watchedIds}
+                isLoggedIn={Boolean(local)}
+                myBidsByListingId={myBidsByListingId}
+                layout="row"
+              />
             ) : (
               <>
                 {auctions.length > 0 && (
@@ -117,7 +139,7 @@ export default async function Home({
                     subtitle="Live auctions"
                     items={auctions}
                     watchedIds={watchedIds}
-                    isLoggedIn={Boolean(session)}
+                    isLoggedIn={Boolean(local)}
                     myBidsByListingId={myBidsByListingId}
                   />
                 )}
@@ -127,7 +149,7 @@ export default async function Home({
                     subtitle="Fixed-price listings, ready to ship"
                     items={fixedPrice}
                     watchedIds={watchedIds}
-                    isLoggedIn={Boolean(session)}
+                    isLoggedIn={Boolean(local)}
                     myBidsByListingId={myBidsByListingId}
                   />
                 )}

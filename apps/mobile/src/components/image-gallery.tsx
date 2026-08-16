@@ -40,9 +40,20 @@ export function ImageGallery({
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 51 }).current;
 
   return (
-    <View>
+    // Explicit height on both the wrapper and the FlatList itself — a
+    // horizontal FlatList does NOT reliably auto-size its cross-axis height
+    // to a taller-than-default item height (getItemLayout only ever
+    // describes the horizontal axis), so leaving it unset worked fine back
+    // when itemHeight was just the SCREEN_WIDTH default but silently
+    // collapsed once callers started passing a taller `height` — the images
+    // still painted (visible overflow), but this wrapper and the dots
+    // positioned against its "bottom" both fell way short of where the
+    // photo actually ended, letting the info sheet below start partway up
+    // the photo instead of right after it.
+    <View style={{ height: itemHeight }}>
       <FlatList
         data={imageUrls}
+        style={{ height: itemHeight }}
         keyExtractor={(url, i) => `${url}-${i}`}
         horizontal
         pagingEnabled
@@ -68,6 +79,7 @@ export function ImageGallery({
               source={item}
               style={[styles.image, height != null && { height, aspectRatio: undefined }]}
               contentFit={contentFit}
+              contentPosition="center"
               transition={150}
             />
           );

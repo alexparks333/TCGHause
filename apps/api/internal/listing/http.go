@@ -36,6 +36,12 @@ func HandleCreate(pool *pgxpool.Pool) http.HandlerFunc {
 				status = http.StatusBadRequest
 			case errors.Is(err, ErrSellerHasNoUsername):
 				status = http.StatusForbidden
+			case errors.Is(err, ErrSellerNotOnboarded):
+				// Same distinct-from-409 reasoning as the checkout paths'
+				// identical check (internal/auction) — this needs its own
+				// status so the frontend can show an accurate message
+				// instead of a generic failure.
+				status = http.StatusPreconditionFailed
 			}
 			http.Error(w, err.Error(), status)
 			return

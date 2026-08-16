@@ -1,12 +1,21 @@
-import { myBuyHistory } from "@/lib/mock-account";
-import HistoryTable from "@/components/HistoryTable";
+import { getMyPurchases } from "@/lib/api";
+import { getLocalSession } from "@/lib/session";
+import PurchaseHistoryTable from "@/components/PurchaseHistoryTable";
 
-export default function BuyHistoryPage() {
+export default async function BuyHistoryPage() {
+  // app/account/layout.tsx already gates this route on a real verified
+  // session, so a local cookie read for the access_token is all this page
+  // needs — same reasoning as Bids/Offers.
+  const local = await getLocalSession();
+  const purchases = local ? await getMyPurchases(local.accessToken) : [];
+
   return (
     <div className="px-10 py-8 sm:px-12 lg:px-14">
       <h1 className="text-xl font-bold text-gray-900">Buy History</h1>
-      <p className="mt-1 text-sm text-gray-500">Items you've purchased.</p>
-      <HistoryTable items={myBuyHistory} counterpartyLabel="Seller" />
+      <p className="mt-1 text-sm text-gray-500">
+        Everything you&apos;ve bought, whether it&apos;s been paid for yet or not.
+      </p>
+      <PurchaseHistoryTable items={purchases} />
     </div>
   );
 }

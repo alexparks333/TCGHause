@@ -8,9 +8,9 @@ import Avatar from "./Avatar";
 import { createClient } from "@/lib/supabase/client";
 
 const ACTIVITY_LINKS = [
-  { href: "/account/buying", label: "Buying" },
   { href: "/account/watchlist", label: "Watchlist" },
   { href: "/account/selling", label: "Selling" },
+  { href: "/account/withdraw", label: "Withdraw" },
   { href: "/account/bids-offers", label: "Bids/Offers" },
   { href: "/account/sold-history", label: "Sold History" },
   { href: "/account/buy-history", label: "Buy History" },
@@ -22,11 +22,16 @@ export default function AccountMenu({
   username,
   fullName,
   avatarUrl,
+  unreadMessageCount = 0,
 }: {
   email: string;
   username?: string | null;
   fullName?: string | null;
   avatarUrl?: string | null;
+  // Real unread-conversation count (internal/message), fetched server-side
+  // by Header alongside everything else — same "no client-only initial
+  // state" reasoning as NotificationBell's own badge.
+  unreadMessageCount?: number;
 }) {
   const displayName = username || fullName || email;
   const [open, setOpen] = useState(false);
@@ -58,9 +63,14 @@ export default function AccountMenu({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="group hidden items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-brand-surface sm:flex"
+        className="group relative hidden items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-brand-surface sm:flex"
       >
-        <Avatar src={avatarUrl} label={displayName} size={26} />
+        <span className="relative">
+          <Avatar src={avatarUrl} label={displayName} size={26} />
+          {unreadMessageCount > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-brand-urgent ring-2 ring-white" />
+          )}
+        </span>
         <span className="hidden max-w-[14ch] truncate align-middle transition-[max-width] duration-300 ease-out group-hover:max-w-[240px] lg:inline-block">
           {displayName}
         </span>
@@ -81,9 +91,14 @@ export default function AccountMenu({
               href={link.href}
               role="menuitem"
               onClick={() => setOpen(false)}
-              className="block px-4 py-2 text-sm text-gray-700 hover:bg-brand-surface"
+              className="flex items-center justify-between gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-brand-surface"
             >
               {link.label}
+              {link.href === "/account/messages" && unreadMessageCount > 0 && (
+                <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-urgent px-1 text-[10px] font-bold text-white">
+                  {unreadMessageCount > 9 ? "9+" : unreadMessageCount}
+                </span>
+              )}
             </Link>
           ))}
           <div className="my-1 border-t border-brand-border" />

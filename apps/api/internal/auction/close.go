@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"auctionhous-tcg/api/internal/notification"
 )
 
 // CloseResult is one auction CloseEndedAuctions actually touched this pass.
@@ -90,13 +92,15 @@ func closeOne(ctx context.Context, pool *pgxpool.Pool, listingID string) (*Close
 		bidCount     int32
 		endsAt       time.Time
 		closedAt     *time.Time
+		sellerID     string
 	)
 	err = tx.QueryRow(ctx, `
-		select current_price_cents, high_bidder_id, bid_count, ends_at, closed_at
-		from auctions
-		where listing_id = $1
-		for update
-	`, listingID).Scan(&currentPrice, &highBidderID, &bidCount, &endsAt, &closedAt)
+		select a.current_price_cents, a.high_bidder_id, a.bid_count, a.ends_at, a.closed_at, l.seller_id
+		from auctions a
+		join listings l on l.id = a.listing_id
+		where a.listing_id = $1
+		for update of a
+	`, listingID).Scan(&currentPrice, &highBidderID, &bidCount, &endsAt, &closedAt, &sellerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrAuctionNotFound
@@ -130,6 +134,15 @@ func closeOne(ctx context.Context, pool *pgxpool.Pool, listingID string) (*Close
 		update listings set status = 'ended' where id = $1
 	`, listingID); err != nil {
 		return nil, fmt.Errorf("update listing: %w", err)
+	}
+
+	if outcome == "sold" {
+		if err := notification.Create(ctx, tx, *highBidderID, notification.KindWon, listingID); err != nil {
+			return nil, fmt.Errorf("notify won: %w", err)
+		}
+		if err := notification.Create(ctx, tx, sellerID, notification.KindSold, listingID); err != nil {
+			return nil, fmt.Errorf("notify sold: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

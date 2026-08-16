@@ -1,12 +1,17 @@
 import { SymbolView } from 'expo-symbols';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, TextInput, View } from 'react-native';
+import { FlatList, Pressable, RefreshControl, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AccountSidebar } from '@/components/account-sidebar';
+import { Avatar } from '@/components/avatar';
+import { FilterSidebar, hasActiveSidebarFilters, type SidebarFilters } from '@/components/filter-sidebar';
 import { GameFilterBar } from '@/components/game-filter-bar';
+import { ListingCard } from '@/components/listing-card';
 import { ListingRow } from '@/components/listing-row';
 import { ListingStrip } from '@/components/listing-strip';
+import { NotificationBell } from '@/components/notification-bell';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Wordmark } from '@/components/wordmark';
@@ -37,29 +42,38 @@ export default function BrowseScreen() {
   const [activeGame, setActiveGame] = useState<Game | null>(null);
   const [query, setQuery] = useState('');
   const [submittedQuery, setSubmittedQuery] = useState('');
+  const [sidebarFilters, setSidebarFilters] = useState<SidebarFilters>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const load = useCallback(async (game: Game | null, search: string) => {
+  const load = useCallback(async (game: Game | null, search: string, extra: SidebarFilters) => {
     try {
       setError(null);
-      if (!game && !search) {
+      if (!game && !search && !hasActiveSidebarFilters(extra)) {
         // Default view shows only the curated strips below — no need to
         // fetch/hold the full listings set until a filter or search is
         // actually applied.
         setListings([]);
         const data = await getActiveListings({});
-        const hottest = data
-          .filter((l) => l.format === 'auction' && (l.bidCount ?? 0) > 0)
+        // Every active auction, not just ones that already have a bid —
+        // mirrors apps/web's homepage "Ending soon" section, which always
+        // shows the full active set. Filtering to bidCount > 0 (the
+        // original version of this) meant a fresh/lightly-used marketplace
+        // showed nothing at all here, which isn't what web does. Bid-active
+        // auctions still surface first via the sort.
+        const auctions = data
+          .filter((l) => l.format === 'auction')
           .sort((a, b) => (b.bidCount ?? 0) - (a.bidCount ?? 0))
           .slice(0, HOT_AUCTIONS_LIMIT);
-        setHotAuctions(hottest);
+        setHotAuctions(auctions);
         return;
       }
       const data = await getActiveListings({
         ...(game ? { game } : {}),
         ...(search ? { search } : {}),
+        ...extra,
       });
       setListings(data);
     } catch (e) {
@@ -93,16 +107,51 @@ export default function BrowseScreen() {
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([load(activeGame, submittedQuery), loadRecentlyViewed(), loadMyState()]).finally(
-      () => setLoading(false),
-    );
+    Promise.all([
+      load(activeGame, submittedQuery, sidebarFilters),
+      loadRecentlyViewed(),
+      loadMyState(),
+    ]).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeGame, submittedQuery, load, loadMyState]);
+  }, [activeGame, submittedQuery, sidebarFilters, load, loadMyState]);
+
+  // NativeTabs keeps this screen mounted permanently — switching tabs never
+  // remounts it, so the mount-only effect above only ever ran once. Without
+  // this, placing a bid on the listing-detail screen and returning to
+  // Browse left watchedIds/myBidsByListingId frozen at their pre-bid
+  // values, so "You're the Top Bidder" (and the watch heart) could never
+  // reflect a bid/watch made anywhere else in the app until a manual
+  // pull-to-refresh. Re-running just loadMyState (not the listings fetch)
+  // on every focus keeps it cheap while keeping this state as fresh as
+  // web's server-fetched-per-navigation pattern.
+  useFocusEffect(
+    useCallback(() => {
+      loadMyState();
+    }, [loadMyState]),
+  );
 
   async function onRefresh() {
     setRefreshing(true);
-    await Promise.all([load(activeGame, submittedQuery), loadRecentlyViewed(), loadMyState()]);
+    await Promise.all([
+      load(activeGame, submittedQuery, sidebarFilters),
+      loadRecentlyViewed(),
+      loadMyState(),
+    ]);
     setRefreshing(false);
+  }
+
+  // The watcherCount shown on each card lives on the Listing objects
+  // themselves (listings/hotAuctions/recentlyViewed), not in watchedIds —
+  // toggling the heart used to only ever flip watchedIds, so the count next
+  // to it stayed stale at whatever it was on the last fetch until a manual
+  // pull-to-refresh. Patches watcherCount in every array a listing might
+  // currently appear in (a hot auction can also be in Recently Viewed).
+  function patchWatcherCount(listingId: string, next: (count: number) => number) {
+    const patch = (list: Listing[]) =>
+      list.map((l) => (l.id === listingId ? { ...l, watcherCount: next(l.watcherCount) } : l));
+    setListings(patch);
+    setHotAuctions(patch);
+    setRecentlyViewed(patch);
   }
 
   async function handleToggleWatch(listingId: string) {
@@ -114,8 +163,12 @@ export default function BrowseScreen() {
       else next.add(listingId);
       return next;
     });
+    patchWatcherCount(listingId, (c) => c + (wasWatching ? -1 : 1));
     try {
-      await (wasWatching ? unwatchListing(listingId) : watchListing(listingId));
+      const status = wasWatching ? await unwatchListing(listingId) : await watchListing(listingId);
+      // Reconcile with the server's real count rather than trusting the
+      // optimistic +/-1 forever.
+      patchWatcherCount(listingId, () => status.watcherCount);
     } catch {
       setWatchedIds((prev) => {
         const next = new Set(prev);
@@ -123,12 +176,22 @@ export default function BrowseScreen() {
         else next.delete(listingId);
         return next;
       });
+      patchWatcherCount(listingId, (c) => c + (wasWatching ? 1 : -1));
     }
   }
 
-  const showStrips = !activeGame && !submittedQuery;
+  // Three states, not two: the curated strips (nothing filtered), a 2-col
+  // grid of ListingCard (a game bubble and/or a FilterSidebar preset
+  // applied — "keep it looking like the vertical badges on the homepage,"
+  // not the search-results row list), and the single-column ListingRow
+  // list (a text search was actually submitted). Game/sidebar filters
+  // narrow the same tile grid the homepage already uses; only typing a
+  // search deliberately switches the visual language to eBay-style search
+  // results.
+  const showStrips = !activeGame && !submittedQuery && !hasActiveSidebarFilters(sidebarFilters);
+  const layoutMode: 'strips' | 'grid' | 'list' = submittedQuery ? 'list' : showStrips ? 'strips' : 'grid';
 
-  // Deliberately ONE component tree regardless of showStrips — this used to
+  // Deliberately ONE component tree regardless of layoutMode — this used to
   // be two different `return`s (a ScrollView-of-strips branch vs. a
   // FlatList-of-results branch), and the header (including the search
   // TextInput) lived inside both. The instant `query` went from empty to
@@ -136,22 +199,23 @@ export default function BrowseScreen() {
   // TextInput mid-keystroke — which is what was eating focus/dismissing
   // the keyboard after exactly one character. A single always-mounted
   // FlatList with ListHeaderComponent keeps the TextInput's position in
-  // the tree stable no matter what's being shown below it.
+  // the tree stable no matter what's being shown below it. The FlatList
+  // itself still remounts on a layoutMode change (via `key` below) since
+  // RN doesn't allow changing numColumns on a live FlatList.
   const listHeader = (
     <View>
       <View style={styles.headerRow}>
         <Wordmark />
-        <Pressable
-          hitSlop={12}
-          style={styles.cartButton}
-          onPress={() => Alert.alert('Cart', 'Cart is coming soon — checkout isn’t built yet.')}>
-          <SymbolView
-            name="cart"
-            size={19}
-            tintColor={Colors.light.text}
-            fallback={<ThemedText type="smallBold">Cart</ThemedText>}
-          />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <NotificationBell />
+          <Pressable hitSlop={12} onPress={() => setSidebarOpen(true)}>
+            <Avatar
+              src={session?.user.user_metadata?.avatar_url as string | undefined}
+              label={(session?.user.user_metadata?.full_name as string | undefined) || session?.user.email || 'U'}
+              size={34}
+            />
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.searchRow}>
@@ -185,15 +249,15 @@ export default function BrowseScreen() {
       {showStrips && (
         <>
           <ListingStrip
-            title="Hot Auctions"
-            listings={hotAuctions}
+            title="Recently Viewed"
+            listings={recentlyViewed}
             watchedIds={watchedIds}
             myBidsByListingId={myBidsByListingId}
             onToggleWatch={handleToggleWatch}
           />
           <ListingStrip
-            title="Recently Viewed"
-            listings={recentlyViewed}
+            title="Live Auctions"
+            listings={hotAuctions}
             watchedIds={watchedIds}
             myBidsByListingId={myBidsByListingId}
             onToggleWatch={handleToggleWatch}
@@ -201,7 +265,7 @@ export default function BrowseScreen() {
         </>
       )}
 
-      {!showStrips && !loading && listings.length === 0 && !error && (
+      {layoutMode !== 'strips' && !loading && listings.length === 0 && !error && (
         <ThemedText type="small" themeColor="textSecondary" style={styles.empty}>
           No active listings{activeGame ? ` in ${activeGame}` : ''} right now.
         </ThemedText>
@@ -213,25 +277,52 @@ export default function BrowseScreen() {
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.container} edges={['top']}>
         <FlatList
+          key={layoutMode}
           style={styles.list}
-          data={showStrips ? [] : listings}
+          data={layoutMode === 'strips' ? [] : listings}
           keyExtractor={(item) => item.id}
+          numColumns={layoutMode === 'grid' ? 2 : 1}
+          columnWrapperStyle={layoutMode === 'grid' ? styles.gridRow : undefined}
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           ListHeaderComponent={listHeader}
-          renderItem={({ item }) => (
-            <ListingRow
-              listing={item}
-              onPress={() => router.push(`/listing/${item.id}`)}
-              watching={watchedIds.has(item.id)}
-              onToggleWatch={() => handleToggleWatch(item.id)}
-              myBid={myBidsByListingId.get(item.id)}
-            />
+          renderItem={({ item }) =>
+            layoutMode === 'grid' ? (
+              <ListingCard
+                listing={item}
+                onPress={() => router.push(`/listing/${item.id}`)}
+                watching={watchedIds.has(item.id)}
+                onToggleWatch={() => handleToggleWatch(item.id)}
+                myBid={myBidsByListingId.get(item.id)}
+              />
+            ) : (
+              <ListingRow
+                listing={item}
+                onPress={() => router.push(`/listing/${item.id}`)}
+                watching={watchedIds.has(item.id)}
+                onToggleWatch={() => handleToggleWatch(item.id)}
+                myBid={myBidsByListingId.get(item.id)}
+              />
+            )
+          }
+          ItemSeparatorComponent={() => (
+            <View style={{ height: layoutMode === 'grid' ? Spacing.three : Spacing.two }} />
           )}
-          ItemSeparatorComponent={() => <View style={{ height: Spacing.two }} />}
         />
       </SafeAreaView>
+      <FilterSidebar
+        activeGame={activeGame}
+        activeQuery={submittedQuery}
+        filters={sidebarFilters}
+        onApply={setSidebarFilters}
+        onClearGame={() => setActiveGame(null)}
+        onClearQuery={() => {
+          setQuery('');
+          setSubmittedQuery('');
+        }}
+      />
+      <AccountSidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} />
     </ThemedView>
   );
 }
@@ -245,14 +336,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
     paddingTop: Spacing.three,
   },
-  cartButton: {
-    width: 38,
-    height: 38,
-    borderRadius: Radius.full,
+  headerActions: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.light.surface,
-    ...SoftShadow,
+    gap: Spacing.three,
   },
   searchRow: {
     flexDirection: 'row',
@@ -270,6 +357,7 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: 16 },
   list: { flex: 1 },
   listContent: { paddingHorizontal: Spacing.three, paddingBottom: Spacing.six },
+  gridRow: { gap: Spacing.three },
   error: { color: '#D64545', paddingHorizontal: Spacing.three, paddingBottom: Spacing.two },
   empty: { padding: Spacing.four, textAlign: 'center' },
 });

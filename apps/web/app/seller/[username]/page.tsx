@@ -6,9 +6,10 @@ import Avatar from "@/components/Avatar";
 import ListingCard from "@/components/ListingCard";
 import StarRating from "@/components/StarRating";
 import ReviewsList from "@/components/ReviewsList";
+import MessageSellerButton from "@/components/messages/MessageSellerButton";
 import ReviewForm from "./ReviewForm";
-import { getUserByUsername, getActiveListings, getSellerReviews, getMyWatchedIds, getCanReview } from "@/lib/api";
-import { getCurrentSession } from "@/lib/session";
+import { getUserByUsername, getActiveListings, getSellerReviews, getMyWatchedIds, getReviewablePurchases } from "@/lib/api";
+import { getLocalSession } from "@/lib/session";
 
 export default async function SellerProfilePage({
   params,
@@ -16,17 +17,24 @@ export default async function SellerProfilePage({
   params: Promise<{ username: string }>;
 }) {
   const { username } = await params;
-  const profile = await getUserByUsername(username);
+
+  // getUserByUsername and getLocalSession don't depend on each other, so
+  // they run together instead of stacking — this page never displays
+  // verified identity, only compares ids (isOwner) and reads the
+  // access_token, so the fast local cookie read is enough; no need for
+  // getCurrentSession()'s slower getUser() network verification.
+  const [profile, local] = await Promise.all([getUserByUsername(username), getLocalSession()]);
   if (!profile) notFound();
 
-  const { session, user: currentUser } = await getCurrentSession();
-  const isOwner = currentUser?.id === profile.id;
+  const isOwner = local?.userId === profile.id;
 
-  const [listings, reviewSummary, watchedIds, canReview] = await Promise.all([
+  const [listings, reviewSummary, watchedIds, reviewablePurchases] = await Promise.all([
     getActiveListings({ sellerId: profile.id }),
     getSellerReviews(username),
-    session ? getMyWatchedIds(session.access_token).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
-    session && !isOwner ? getCanReview(username, session.access_token).catch(() => false) : Promise.resolve(false),
+    local ? getMyWatchedIds(local.accessToken).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
+    local && !isOwner
+      ? getReviewablePurchases(username, local.accessToken).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   const joinedAt = new Date(profile.createdAt).toLocaleDateString("en-US", {
@@ -58,15 +66,28 @@ export default async function SellerProfilePage({
                       : "No reviews yet"}
                   </span>
                 </a>
+                {reviewSummary.count > 0 && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    Condition Accuracy {reviewSummary.averageConditionAccuracy.toFixed(1)} · Shipping
+                    Speed {reviewSummary.averageShippingSpeed.toFixed(1)} · Trustworthiness{" "}
+                    {reviewSummary.averageTrustworthiness.toFixed(1)}
+                  </p>
+                )}
               </div>
             </div>
-            {isOwner && (
+            {isOwner ? (
               <Link
                 href="/account/settings"
                 className="text-sm font-medium text-brand-navy hover:underline"
               >
                 Edit in Account Settings
               </Link>
+            ) : (
+              local && (
+                <div className="w-full max-w-xs sm:w-auto">
+                  <MessageSellerButton recipientId={profile.id} recipientLabel={profile.username ?? "Seller"} />
+                </div>
+              )
             )}
           </div>
 
@@ -84,7 +105,7 @@ export default async function SellerProfilePage({
                   key={listing.id}
                   listing={listing}
                   initialWatching={watchedIds.has(listing.id)}
-                  isLoggedIn={Boolean(session)}
+                  isLoggedIn={Boolean(local)}
                 />
               ))}
             </div>
@@ -94,19 +115,19 @@ export default async function SellerProfilePage({
         <section id="reviews" className="mt-8 max-w-2xl scroll-mt-32">
           <h2 className="text-lg font-bold text-gray-900">Reviews</h2>
 
-          {!isOwner && session && (
+          {!isOwner && local && (
             <div className="mt-4">
-              {canReview ? (
-                <ReviewForm username={username} />
+              {reviewablePurchases.length > 0 ? (
+                <ReviewForm username={username} reviewablePurchases={reviewablePurchases} />
               ) : (
                 <p className="rounded-xl border border-brand-border bg-white p-4 text-sm text-gray-500">
-                  You can leave a review once you&apos;ve won one of {profile.username}&apos;s auctions.
+                  You can leave a review once you&apos;ve bought something from {profile.username}.
                 </p>
               )}
             </div>
           )}
 
-          <ReviewsList reviews={reviewSummary.reviews} />
+          <ReviewsList reviews={reviewSummary.reviews} username={username} isOwner={isOwner} />
         </section>
       </div>
 

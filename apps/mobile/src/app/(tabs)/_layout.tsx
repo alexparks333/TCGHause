@@ -15,6 +15,11 @@ export default function TabLayout() {
         <Icon sf="hammer" drawable="ic_menu_recent_history" />
       </NativeTabs.Trigger>
 
+      <NativeTabs.Trigger name="watchlist">
+        <Label>Watchlist</Label>
+        <Icon sf="heart" drawable="btn_star_big_on" />
+      </NativeTabs.Trigger>
+
       <NativeTabs.Trigger name="scan">
         <Label>Scan</Label>
         <Icon sf="viewfinder" drawable="ic_menu_camera" />

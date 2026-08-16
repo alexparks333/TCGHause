@@ -54,7 +54,7 @@ export default function FilterSidebar({ searchParams }: { searchParams: SearchPa
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-label={open ? "Collapse filters" : "Expand filters"}
-        className="relative flex w-full items-center justify-between p-3"
+        className="relative flex w-full items-center justify-between px-3 py-4"
       >
         {open ? (
           <>

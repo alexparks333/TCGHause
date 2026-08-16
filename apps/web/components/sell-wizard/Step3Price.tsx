@@ -2,7 +2,7 @@
 
 import type { FormEvent } from "react";
 import type { WizardData, UpdateField } from "../SellWizard";
-import { inputClass, labelClass } from "./styles";
+import MoneyInput from "./MoneyInput";
 
 // Real product decision (CLAUDE.md §6.1): auctions run 2 days, 3.5 days, or
 // 7 days — nothing else. The 1/2/5-minute options only exist to dissect the
@@ -72,49 +72,67 @@ export default function Step3Price({
 
       {data.format === "auction" ? (
         <>
-          <label className={labelClass}>
-            Starting bid ($)
-            <input
+          <div className="flex flex-wrap items-start gap-4">
+            <MoneyInput
+              label="Starting bid"
               required
-              type="number"
-              min="0.01"
-              step="0.01"
               value={data.startingBid}
-              onChange={(e) => update("startingBid", e.target.value)}
-              className={inputClass}
+              onChange={(v) => update("startingBid", v)}
               placeholder="5.00"
             />
-          </label>
 
-          <label className={labelClass}>
-            Auction length
-            <select
-              value={data.durationMinutes}
-              onChange={(e) => update("durationMinutes", Number(e.target.value))}
-              className={inputClass}
-            >
-              {DURATION_OPTIONS.map((opt) => (
-                <option key={opt.minutes} value={opt.minutes}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </label>
+            <label className="flex w-48 flex-col gap-1.5 text-sm font-medium text-gray-700">
+              Auction length
+              <select
+                value={data.durationMinutes}
+                onChange={(e) => update("durationMinutes", Number(e.target.value))}
+                className="w-full rounded-2xl border border-gray-300 bg-white px-4 py-3.5 text-base font-semibold text-gray-900 shadow-sm outline-none transition-colors focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/20"
+              >
+                {DURATION_OPTIONS.map((opt) => (
+                  <option key={opt.minutes} value={opt.minutes}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="rounded-lg border border-gray-200 p-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+              <input
+                type="checkbox"
+                checked={data.buyItNowEnabled}
+                onChange={(e) => update("buyItNowEnabled", e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 accent-brand-navy"
+              />
+              Also offer a Buy It Now price
+            </label>
+            <p className="mt-1 text-xs text-gray-500">
+              Buyers can skip bidding and purchase instantly at this price, any time before the
+              auction ends.
+            </p>
+
+            {data.buyItNowEnabled && (
+              <div className="mt-3">
+                <MoneyInput
+                  label="Buy It Now price"
+                  required
+                  value={data.buyItNowPrice}
+                  onChange={(v) => update("buyItNowPrice", v)}
+                  placeholder="49.99"
+                />
+              </div>
+            )}
+          </div>
         </>
       ) : (
-        <label className={labelClass}>
-          Price ($)
-          <input
-            required
-            type="number"
-            min="0.01"
-            step="0.01"
-            value={data.price}
-            onChange={(e) => update("price", e.target.value)}
-            className={inputClass}
-            placeholder="24.99"
-          />
-        </label>
+        <MoneyInput
+          label="Price"
+          required
+          value={data.price}
+          onChange={(v) => update("price", v)}
+          placeholder="24.99"
+        />
       )}
 
       <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
@@ -128,18 +146,12 @@ export default function Step3Price({
       </label>
 
       {!data.freeShipping && (
-        <label className={labelClass}>
-          Shipping cost ($)
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={data.shippingCost}
-            onChange={(e) => update("shippingCost", e.target.value)}
-            className={inputClass}
-            placeholder="4.99"
-          />
-        </label>
+        <MoneyInput
+          label="Shipping cost"
+          value={data.shippingCost}
+          onChange={(v) => update("shippingCost", v)}
+          placeholder="4.99"
+        />
       )}
 
       {error && <p className="text-sm text-brand-urgent">{error}</p>}

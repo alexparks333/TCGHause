@@ -1,0 +1,1 @@
+alter table notifications drop constraint if exists notifications_user_id_listing_id_key;

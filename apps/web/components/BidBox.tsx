@@ -1,12 +1,20 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, type BidResult } from "@/lib/api";
 import type { Listing } from "@/lib/types";
 
-export default function BidBox({ listing }: { listing: Listing }) {
-  const router = useRouter();
+// No router.refresh() here anymore — that was a full Next.js server round
+// trip (page re-fetch + re-render) just to show the price you already got
+// back in the POST response. onBidPlaced hands that response straight to
+// AuctionPriceBox, which updates the displayed price/leader instantly.
+export default function BidBox({
+  listing,
+  onBidPlaced,
+}: {
+  listing: Listing;
+  onBidPlaced: (result: BidResult, maxBidCents: number) => void;
+}) {
   const [maxBid, setMaxBid] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState("");
@@ -24,13 +32,13 @@ export default function BidBox({ listing }: { listing: Listing }) {
 
     setStatus("loading");
     try {
-      await apiFetch(`/listings/${listing.id}/bids`, {
+      const result: BidResult = await apiFetch(`/listings/${listing.id}/bids`, {
         method: "POST",
         body: JSON.stringify({ maxBidCents: cents }),
       });
+      onBidPlaced(result, cents);
       setMaxBid("");
       setStatus("idle");
-      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not place bid.");
       setStatus("error");
