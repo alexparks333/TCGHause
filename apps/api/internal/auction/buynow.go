@@ -19,6 +19,7 @@ import (
 	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/platform"
 	"auctionhous-tcg/api/internal/seller"
+	"auctionhous-tcg/api/internal/shipping"
 )
 
 var ErrNoBuyItNowPrice = errors.New("this auction has no Buy It Now price")
@@ -210,19 +211,20 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 		payingForWonAuction := lst.Outcome != nil && *lst.Outcome == "sold" &&
 			lst.HighBidderID != nil && *lst.HighBidderID == buyerID
 
-		// A direct charge's PaymentIntent only exists on the seller's
-		// connected account (design doc v2 §5.3), so the listing has to be
-		// fetched first — this lookup used to happen after Retrieve, but
-		// Retrieve itself now needs to know which connected account to
-		// look on.
+		// The seller still needs to be checked here (not just at
+		// checkout-intent creation time) — same "never trust anything
+		// computed earlier in a gap that could contain a race" reasoning as
+		// everywhere else in this codebase — but the PaymentIntent itself
+		// lives on the PLATFORM account regardless of the seller's Connect
+		// state (docs/Legal_MoneyTransitter.md / separate charges and
+		// transfers), so Retrieve below never needs a connected account id.
 		var pi *stripe.PaymentIntent
-		var stripeAccountID string
 		if req.PaymentIntentID != "" {
 			if !paymentClient.IsConfigured() {
 				http.Error(w, "payments are not configured", http.StatusBadRequest)
 				return
 			}
-			stripeAccountID, err = seller.RequireChargesEnabled(r.Context(), pool, lst.SellerID)
+			stripeAccountID, err := seller.RequirePayoutsEnabled(r.Context(), pool, lst.SellerID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -233,7 +235,7 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 				http.Error(w, ErrSellerNotOnboarded.Error(), http.StatusPreconditionFailed)
 				return
 			}
-			pi, err = paymentClient.Retrieve(r.Context(), stripeAccountID, req.PaymentIntentID)
+			pi, err = paymentClient.Retrieve(r.Context(), req.PaymentIntentID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -278,7 +280,7 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 				// This buyer authorized a card but lost the race (or the
 				// listing became invalid between authorizing and now) —
 				// release the hold. They were never charged.
-				if cancelErr := paymentClient.Cancel(r.Context(), stripeAccountID, pi.ID); cancelErr != nil {
+				if cancelErr := paymentClient.Cancel(r.Context(), pi.ID); cancelErr != nil {
 					log.Printf("buy-now: failed to cancel payment intent %s after lost purchase: %v", pi.ID, cancelErr)
 				}
 			}
@@ -303,8 +305,13 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 			// comment, so "resolving a win" for ACH means simply not
 			// cancelling it.
 			var captureErr error
+			var chargeID string
 			if rail == order.RailCard {
-				captureErr = paymentClient.Capture(r.Context(), stripeAccountID, pi.ID)
+				var captured *stripe.PaymentIntent
+				captured, captureErr = paymentClient.Capture(r.Context(), pi.ID)
+				if captureErr == nil && captured.LatestCharge != nil {
+					chargeID = captured.LatestCharge.ID
+				}
 			}
 			if captureErr != nil {
 				// The purchase already committed in our own database — a
@@ -344,7 +351,7 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 				// worse than a logged inconsistency. Re-quotes fresh from
 				// the seller's currently-stored tier rather than trusting
 				// anything computed at checkout-intent time (CLAUDE.md §5.3).
-				createOrderRecord(r.Context(), pool, listingID, buyerID, lst.SellerID, pi.ID, rail, result)
+				createOrderRecord(r.Context(), pool, listingID, buyerID, lst.SellerID, pi.ID, chargeID, rail, result)
 			}
 		}
 
@@ -372,7 +379,7 @@ func containsUSBankAccount(types []string) bool {
 // later. Logged, not returned as an error: this runs only after a real
 // Stripe payment already committed, so a failure here must never look like
 // the purchase itself failed.
-func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, sellerID, paymentIntentID string, rail order.Rail, result *listing.Listing) {
+func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, sellerID, paymentIntentID, chargeID string, rail order.Rail, result *listing.Listing) {
 	subtotalCents := subtotalForResult(result)
 	if subtotalCents <= 0 {
 		log.Printf("buy-now: no purchasable price on result for order record (listing %s)", listingID)
@@ -385,12 +392,22 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 		return
 	}
 
+	// The listing's own chosen preset is only a floor the seller opted into
+	// at listing time — never trusted alone, since a low-starting-bid
+	// auction can close well above the price that was knowable when the
+	// preset was picked. shipping.Max keeps whichever of the two is
+	// stricter, per internal/shipping's package doc.
+	shippingTier := shipping.Max(shipping.Tier(result.ShippingTier), shipping.RequiredTier(subtotalCents))
+
 	orderID, err := order.CreateFromWin(ctx, pool, listingID, buyerID, sellerID, order.CreateInput{
 		Quote:                 quote,
 		Rail:                  rail,
 		Tier:                  string(tier),
 		TierPct:               seller.PctForTier(tier),
 		StripePaymentIntentID: paymentIntentID,
+		StripeChargeID:        chargeID,
+		ShippingTier:          string(shippingTier),
+		SignatureRequired:     shippingTier == shipping.TierSignature,
 	})
 	if err != nil {
 		log.Printf("buy-now: failed to create order record for %s: %v", listingID, err)

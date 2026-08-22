@@ -13,6 +13,7 @@ import (
 	"auctionhous-tcg/api/internal/catalog"
 	"auctionhous-tcg/api/internal/notification"
 	"auctionhous-tcg/api/internal/seller"
+	"auctionhous-tcg/api/internal/shipping"
 	"auctionhous-tcg/api/internal/user"
 )
 
@@ -111,25 +112,33 @@ type Listing struct {
 	// — always real, 'new' being the honest default rather than a
 	// placeholder, same "derive, never fabricate" rule as the rating
 	// aggregates above.
-	SellerTier        string    `json:"sellerTier"`
-	Title             string    `json:"title"`
-	Game              string    `json:"game"`
-	SetName           string    `json:"set"`
-	CardNumber        *string   `json:"cardNumber,omitempty"`
-	Rarity            *string   `json:"rarity,omitempty"`
-	Condition         string    `json:"condition"`
-	IsGraded          bool      `json:"isGraded"`
-	GradingCompany    *string   `json:"gradingCompany,omitempty"`
-	Grade             *string   `json:"grade,omitempty"`
-	CertNumber        *string   `json:"certNumber,omitempty"`
-	Format            Format    `json:"format"`
-	PriceCents        *int64    `json:"priceCents,omitempty"`
-	FreeShipping      bool      `json:"freeShipping"`
-	ShippingCostCents int64     `json:"shippingCostCents"`
-	ImageUrls         []string  `json:"imageUrls"`
-	WatcherCount      int       `json:"watcherCount"`
-	Status            string    `json:"status"`
-	CreatedAt         time.Time `json:"createdAt"`
+	SellerTier        string  `json:"sellerTier"`
+	Title             string  `json:"title"`
+	Game              string  `json:"game"`
+	SetName           string  `json:"set"`
+	CardNumber        *string `json:"cardNumber,omitempty"`
+	Rarity            *string `json:"rarity,omitempty"`
+	Condition         string  `json:"condition"`
+	IsGraded          bool    `json:"isGraded"`
+	GradingCompany    *string `json:"gradingCompany,omitempty"`
+	Grade             *string `json:"grade,omitempty"`
+	CertNumber        *string `json:"certNumber,omitempty"`
+	Format            Format  `json:"format"`
+	PriceCents        *int64  `json:"priceCents,omitempty"`
+	FreeShipping      bool    `json:"freeShipping"`
+	ShippingCostCents int64   `json:"shippingCostCents"`
+	// ShippingTier is the seller's chosen preset at listing time
+	// (internal/shipping.Tier's three values) — "the floor," not
+	// necessarily what the item ships at: a low-starting-bid auction that
+	// closes above $500 still ships signature-tier regardless of what's
+	// recorded here, since order.CreateFromWin combines this with
+	// shipping.RequiredTier(finalPrice) and keeps whichever is stricter.
+	// See internal/shipping's package doc for the full policy.
+	ShippingTier string    `json:"shippingTier"`
+	ImageUrls    []string  `json:"imageUrls"`
+	WatcherCount int       `json:"watcherCount"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"createdAt"`
 
 	StartingBidCents  *int64     `json:"startingBidCents,omitempty"`
 	CurrentPriceCents *int64     `json:"currentPriceCents,omitempty"`
@@ -203,10 +212,14 @@ type CreateInput struct {
 	// auction alone is Format=auction with this left at 0; fixed-price
 	// alone is Format=fixed (its own PriceCents is the Buy It Now price);
 	// "both" is Format=auction with this set to a real price.
-	BuyItNowPriceCents int64    `json:"buyItNowPriceCents"`
-	FreeShipping       bool     `json:"freeShipping"`
-	ShippingCostCents  int64    `json:"shippingCostCents"`
-	ImageUrls          []string `json:"imageUrls"`
+	BuyItNowPriceCents int64 `json:"buyItNowPriceCents"`
+	FreeShipping       bool  `json:"freeShipping"`
+	ShippingCostCents  int64 `json:"shippingCostCents"`
+	// ShippingTier is one of shipping.TierStandard/TierTracked/
+	// TierSignature — defaults to TierStandard when empty (the common
+	// bubble-mailer case), validated in Create against Tier.Valid().
+	ShippingTier string   `json:"shippingTier"`
+	ImageUrls    []string `json:"imageUrls"`
 }
 
 const selectColumns = `
@@ -219,7 +232,7 @@ const selectColumns = `
 	u.tier,
 	l.title, l.game, l.set_name, l.card_number, l.rarity, l.condition,
 	l.is_graded, l.grading_company, l.grade, l.cert_number, l.format, l.price_cents,
-	l.free_shipping, l.shipping_cost_cents, l.image_urls,
+	l.free_shipping, l.shipping_cost_cents, l.shipping_tier, l.image_urls,
 	(select count(*) from watchlist w where w.listing_id = l.id) as watcher_count,
 	l.status, l.created_at, l.buyer_id, l.sold_at,
 	a.starting_bid_cents, a.current_price_cents, a.high_bidder_id, a.bid_count, a.ends_at, a.outcome,
@@ -243,7 +256,7 @@ func scanListing(row rowScanner) (Listing, error) {
 		&lst.ID, &lst.SellerID, &lst.SellerUsername, &lst.SellerRatingAvg, &lst.SellerReviewCount, &lst.SellerTier,
 		&lst.Title, &lst.Game, &lst.SetName, &lst.CardNumber, &lst.Rarity, &lst.Condition,
 		&lst.IsGraded, &lst.GradingCompany, &lst.Grade, &lst.CertNumber, &format, &lst.PriceCents,
-		&lst.FreeShipping, &lst.ShippingCostCents, &lst.ImageUrls, &lst.WatcherCount, &lst.Status, &lst.CreatedAt, &lst.BuyerID, &lst.SoldAt,
+		&lst.FreeShipping, &lst.ShippingCostCents, &lst.ShippingTier, &lst.ImageUrls, &lst.WatcherCount, &lst.Status, &lst.CreatedAt, &lst.BuyerID, &lst.SoldAt,
 		&lst.StartingBidCents, &lst.CurrentPriceCents, &lst.HighBidderID, &lst.BidCount, &lst.EndsAt, &lst.Outcome,
 		&lst.BuyItNowPriceCents, &lst.ClosedAt, &lst.PaidAt, &lst.BuyerUsername,
 	)
@@ -262,7 +275,7 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 		return nil, fmt.Errorf("check seller username: %w", err)
 	}
 	if RequireSellerOnboarded {
-		accountID, err := seller.RequireChargesEnabled(ctx, pool, sellerID)
+		accountID, err := seller.RequirePayoutsEnabled(ctx, pool, sellerID)
 		if err != nil {
 			return nil, fmt.Errorf("check seller connect status: %w", err)
 		}
@@ -296,6 +309,13 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 	if len(in.ImageUrls) == 0 && !AllowMissingPhotos {
 		return nil, fmt.Errorf("%w: at least one photo is required", ErrInvalidInput)
 	}
+	shippingTier := in.ShippingTier
+	if shippingTier == "" {
+		shippingTier = string(shipping.TierStandard)
+	}
+	if !shipping.Tier(shippingTier).Valid() {
+		return nil, fmt.Errorf("%w: shippingTier must be \"standard\", \"tracked\", or \"signature\"", ErrInvalidInput)
+	}
 	var auctionLength time.Duration
 	if in.Format == FormatAuction {
 		d, ok := auctionDuration(in.DurationMinutes)
@@ -325,13 +345,13 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 	err = tx.QueryRow(ctx, `
 		insert into listings (seller_id, title, game, set_name, card_number, rarity, condition,
 			is_graded, grading_company, grade, cert_number, format, price_cents,
-			free_shipping, shipping_cost_cents, image_urls)
-		values ($1,$2,$3,$4,nullif($5,''),nullif($6,''),$7,$8,nullif($9,''),nullif($10,''),nullif($11,''),$12,$13,$14,$15,$16)
+			free_shipping, shipping_cost_cents, shipping_tier, image_urls)
+		values ($1,$2,$3,$4,nullif($5,''),nullif($6,''),$7,$8,nullif($9,''),nullif($10,''),nullif($11,''),$12,$13,$14,$15,$16,$17)
 		returning id
 	`,
 		sellerID, in.Title, in.Game, in.SetName, in.CardNumber, in.Rarity, in.Condition,
 		in.IsGraded, in.GradingCompany, in.Grade, in.CertNumber, string(in.Format), priceCents,
-		in.FreeShipping, in.ShippingCostCents, imageUrls,
+		in.FreeShipping, in.ShippingCostCents, shippingTier, imageUrls,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert listing: %w", err)
@@ -471,19 +491,20 @@ type ListFilters struct {
 	Game     string // category-bubble filter (§6.14)
 	Search   string // cross-field + typo-tolerant match — the search box (§6.14, §6.7)
 
-	// Finished shows every listing that's no longer purchasable — an
-	// auction whose clock ran out (whether or not it ever received a bid),
-	// one bought outright via Buy It Now before that, or a fixed-price
-	// listing that sold. Named for "no longer available", not "Sold":
-	// without internal/order wired in here yet (design doc v2 §5) a
-	// listing's own Outcome/BuyerID field is the closest thing to a
-	// confirmed sale, not an actual paid/shipped transaction — see
-	// paid_at (migration 0019) for the one piece of that this app does
+	// Sold shows only listings that actually sold — a fixed-price listing
+	// with a real buyer_id, or an auction whose outcome is "sold" (won via
+	// bidding) or "bought_now" (Buy It Now on an auction listing). An
+	// auction that timed out with no bids at all (outcome = "no_bids")
+	// never qualifies here even though it's equally "ended" — it isn't a
+	// sale, so it must never appear under a filter labeled Sold. This is
+	// the closest thing to a confirmed sale without internal/order wired
+	// in yet (design doc v2 §5) — not an actual paid/shipped transaction;
+	// see paid_at (migration 0019) for the one piece of that this app does
 	// track for real.
-	// When false (default), ended listings are excluded from results
-	// entirely — matching how a live marketplace only shows what's still
+	// When false (default), unsold/still-active listings are all that's
+	// returned — matching how a live marketplace only shows what's still
 	// actually for sale.
-	Finished bool
+	Sold bool
 
 	// FixedOnly is the "Buy It Now" toggle — restricts to fixed-price
 	// listings, hiding every auction.
@@ -522,15 +543,15 @@ type ListFilters struct {
 // v1 requirement — this is fixed-weight relevance, not a learned one.
 func ListActive(ctx context.Context, pool *pgxpool.Pool, f ListFilters) ([]Listing, error) {
 	// cmd/worker's auction-close pass (internal/auction/close.go) flips a
-	// listing's status to 'ended' once its clock runs out, so Finished
-	// results have to match that status instead of 'active'. Also accept
-	// 'active' in the Finished case: there's a small window between an
-	// auction's ends_at passing and the worker's next tick actually
-	// closing it, and a just-ended auction shouldn't vanish from Finished
-	// results during that window just because status hasn't caught up yet
-	// — the ends_at check below is what actually decides "finished" either way.
+	// listing's status to 'ended' once its clock runs out, so Sold results
+	// have to match that status instead of 'active'. Also accept 'active'
+	// in the Sold case: there's a small window between a listing actually
+	// selling and its status catching up (a Buy It Now purchase or
+	// close.go's outcome update happen first) — the buyer_id/outcome check
+	// below is what actually decides "sold" either way, this just widens
+	// the status net enough not to miss it.
 	statuses := []string{"active"}
-	if f.Finished {
+	if f.Sold {
 		statuses = []string{"active", "ended"}
 	}
 	query := `select ` + selectColumns + ` ` + fromClause + ` where l.status = any($1)`
@@ -568,18 +589,16 @@ func ListActive(ctx context.Context, pool *pgxpool.Pool, f ListFilters) ([]Listi
 		)
 	}
 
-	if f.Finished {
-		// l.status = 'ended' is the authoritative "this is over" signal —
-		// set synchronously by BuyNowFixed/BuyNow/close.go the instant a
-		// listing actually stops being purchasable, whether that's a
-		// natural auction timeout, a Buy It Now purchase (which closes an
-		// auction before its clock runs out — ends_at alone can't see
-		// that), or a fixed-price sale. The ends_at <= now() half only
-		// covers the brief gap between a natural timeout and cmd/worker's
-		// next tick actually flipping status (still 'active' there) —
-		// without it, a just-timed-out auction would flash out of Finished
-		// results for up to its ~2s poll interval.
-		query += ` and (l.status = 'ended' or (l.format = 'auction' and a.ends_at <= now()))`
+	if f.Sold {
+		// l.buyer_id is the authoritative "this fixed listing actually
+		// sold" signal (set synchronously by BuyNowFixed); a.outcome in
+		// ('sold', 'bought_now') is the auction equivalent — 'sold' means
+		// won via bidding, 'bought_now' means purchased outright before the
+		// clock ran out. Deliberately does NOT match on l.status = 'ended'
+		// or a.ends_at alone — an auction that timed out with zero bids is
+		// just as "ended" but has outcome = 'no_bids', and must never show
+		// up under Sold since it never actually sold.
+		query += ` and (l.buyer_id is not null or (l.format = 'auction' and a.outcome in ('sold', 'bought_now')))`
 	} else {
 		query += ` and (l.format = 'fixed' or a.ends_at > now())`
 	}
@@ -605,10 +624,10 @@ func ListActive(ctx context.Context, pool *pgxpool.Pool, f ListFilters) ([]Listi
 	}
 
 	// "Time left" is a live-auction concept — meaningless (and actively
-	// wrong, since a finished auction's ends_at is in the past) once
-	// Finished is set, so skip it entirely rather than let the slider's
-	// default 0-hour minimum silently exclude every finished result.
-	if !f.Finished {
+	// wrong, since a sold listing's ends_at is in the past) once Sold is
+	// set, so skip it entirely rather than let the slider's default 0-hour
+	// minimum silently exclude every sold result.
+	if !f.Sold {
 		if f.TimeLeftMinHours != nil {
 			args = append(args, time.Now().Add(time.Duration(*f.TimeLeftMinHours*float64(time.Hour))))
 			query += fmt.Sprintf(` and (l.format = 'fixed' or a.ends_at >= $%d)`, len(args))

@@ -64,7 +64,7 @@ export interface ListingFilters {
   sellerId?: string;
   game?: string;
   search?: string;
-  finished?: boolean;
+  sold?: boolean;
   fixedOnly?: boolean;
   priceMinCents?: number;
   priceMaxCents?: number;
@@ -82,7 +82,7 @@ export async function getActiveListings(filters: ListingFilters = {}): Promise<L
   if (filters.sellerId) params.set("seller_id", filters.sellerId);
   if (filters.game) params.set("game", filters.game);
   if (filters.search) params.set("q", filters.search);
-  if (filters.finished) params.set("finished", "true");
+  if (filters.sold) params.set("sold", "true");
   if (filters.fixedOnly) params.set("fixedOnly", "true");
   if (filters.priceMinCents !== undefined) params.set("priceMin", String(filters.priceMinCents));
   if (filters.priceMaxCents !== undefined) params.set("priceMax", String(filters.priceMaxCents));
@@ -582,11 +582,6 @@ export interface SavedBank {
 export interface CheckoutIntent {
   clientSecret: string;
   paymentIntentId: string;
-  // The seller's Stripe Connect account id — this PaymentIntent is a
-  // direct charge (design doc v2 §5.3) that lives entirely on that
-  // account, not the platform account. getStripe() must be initialized
-  // with this id or the Payment Element fails to load clientSecret at all.
-  stripeAccountId: string;
   rail: "card" | "ach";
   // The amount THIS specific intent charges — matches cardAmountCents or
   // bankAmountCents below depending on rail.
@@ -779,6 +774,53 @@ export interface Order {
   claimDeadline?: string;
   releasedAt?: string;
   createdAt: string;
+  // Snapshotted at sale time (apps/api/internal/order.CreateFromWin) —
+  // whichever of the listing's chosen preset and the price-driven floor
+  // (internal/shipping.RequiredTier) is stricter. Absent on orders created
+  // before this feature existed.
+  shippingTier?: "standard" | "tracked" | "signature";
+  signatureRequired: boolean;
+  labelCostCents?: number;
+  labelUrl?: string;
+}
+
+// Mirrors apps/api/internal/order.Summary exactly — the Transactions tab's
+// one row shape, an Order plus exactly the denormalized fields that list
+// needs (listing title/photo, the other party's username) so it never has
+// to N+1-fetch every listing just to render a list of orders.
+export interface OrderSummary extends Order {
+  listingTitle: string;
+  listingImageUrl?: string;
+  counterpartyId: string;
+  counterpartyUsername?: string;
+  // Both sides' usernames, unconditional on viewer perspective — the
+  // Transactions list's stepper always shows Seller on one end and Buyer
+  // on the other, so it needs both, not just "the other one."
+  sellerUsername?: string;
+  buyerUsername?: string;
+  viewerIsSeller: boolean;
+}
+
+// Every order the caller is a participant in, buyer or seller side,
+// newest first — backs the Transactions tab (account/transactions), which
+// merges what used to only be visible split across Sold History/Buy
+// History (no state) and the one-off post-checkout order-status page (no
+// persistent list). Requires auth — same explicit-accessToken shape as
+// getMyBids/getMySales.
+export async function getMyOrders(accessToken: string): Promise<OrderSummary[]> {
+  const res = await fetch(`${API_URL}/me/orders`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Failed to load orders: ${res.status}`);
+  return res.json();
+}
+
+// Same /me/orders data as getMyOrders, but for Client Components (the
+// Support claim-start picker) — apiFetch attaches the current session's
+// token itself, so there's no accessToken to thread down as a prop.
+export async function getMyOrdersMine(): Promise<OrderSummary[]> {
+  return apiFetch("/me/orders");
 }
 
 // Mirrors apps/api/internal/order.EvidenceType exactly.
@@ -820,6 +862,28 @@ export async function addOrderEvidence(
   });
 }
 
+// Result of a real EasyPost label purchase — mirrors apps/api/internal/
+// shipping's buyLabelResponse exactly.
+export interface ShippingLabel {
+  trackingNumber: string;
+  carrier: string;
+  service: string;
+  labelUrl: string;
+  costCents: number;
+}
+
+// The seller's "buy a shipping label" action — rate-shops and purchases a
+// real EasyPost label at whichever tier the order snapshotted (standard/
+// tracked/signature, see Order.shippingTier), using both parties' saved
+// addresses (Account Settings). 400 if either address is missing, 503 if
+// EASYPOST_API_KEY isn't configured on the backend. Only records the
+// result on the order — still requires a follow-up shipOrder call (or the
+// caller can pass the returned carrier/trackingNumber straight through) to
+// actually transition the order to shipped.
+export async function buyShippingLabel(listingId: string): Promise<ShippingLabel> {
+  return apiFetch(`/listings/${listingId}/order/shipping-label`, { method: "POST" });
+}
+
 // The seller's "mark as shipped" action — rejected (409) until the
 // required photo evidence (card front/back, sealed package) is already on
 // file, per design doc v2 §5.3.
@@ -858,6 +922,9 @@ export type ClaimLiableParty = "seller" | "buyer" | "platform";
 
 export interface Claim {
   id: string;
+  // "CLM-000123" — the human-facing ticket number shown throughout the
+  // claim UI, distinct from the internal uuid id.
+  ticketNumber: string;
   orderId: string;
   openedBy: string;
   reasonCode: ClaimReasonCode;
@@ -943,6 +1010,67 @@ export async function escalateClaim(claimId: string): Promise<void> {
 
 export async function appealClaim(claimId: string, body: string): Promise<void> {
   await apiFetch(`/claims/${claimId}/appeal`, { method: "POST", body: JSON.stringify({ body }) });
+}
+
+// --- Admin claims queue (the Workers side's first page) ---
+//
+// Mirrors apps/api/internal/dispute.AdminClaimSummary exactly — a Claim
+// plus exactly the order/listing/participant context the queue and detail
+// screens need, denormalized so neither view has to N+1-fetch the order.
+export interface AdminClaimSummary extends Claim {
+  orderState: OrderState;
+  chargedCents: number;
+  listingTitle: string;
+  buyerUsername: string;
+  sellerUsername: string;
+}
+
+export interface AdminClaimDetail {
+  claim: AdminClaimSummary;
+  events: ClaimEvent[];
+}
+
+// Admin-only (server enforces via the same email allowlist as
+// getAdminMetrics). stateFilter narrows the queue to one state — pass
+// "human_review" for "needs a decision," omit for full history.
+export async function getAdminClaims(
+  accessToken: string,
+  stateFilter?: ClaimState,
+): Promise<AdminClaimSummary[]> {
+  const qs = stateFilter ? `?state=${stateFilter}` : "";
+  const res = await fetch(`${API_URL}/admin/claims${qs}`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new ApiError(await res.text(), res.status);
+  return res.json();
+}
+
+export async function getAdminClaim(claimId: string, accessToken: string): Promise<AdminClaimDetail> {
+  const res = await fetch(`${API_URL}/admin/claims/${claimId}`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new ApiError(await res.text(), res.status);
+  return res.json();
+}
+
+export interface DecideClaimInput {
+  resolution: ClaimResolution;
+  liableParty: ClaimLiableParty;
+  refundCents: number;
+}
+
+// decideClaim backs a claim in human_review; decideClaimAppeal backs one in
+// appealed (design doc v2 §9.1's "one appeal, different reviewer, final") —
+// two endpoints because the state machine only allows each transition from
+// its own state (apps/api/internal/dispute/dispute.go's transitions table).
+export async function decideClaim(claimId: string, input: DecideClaimInput): Promise<void> {
+  await apiFetch(`/claims/${claimId}/decide`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function decideClaimAppeal(claimId: string, input: DecideClaimInput): Promise<void> {
+  await apiFetch(`/claims/${claimId}/decide-appeal`, { method: "POST", body: JSON.stringify(input) });
 }
 
 // Design doc v2 §6.3's paid instant-payout upsell — pays out everything

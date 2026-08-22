@@ -2,12 +2,21 @@ import { Image } from 'expo-image';
 import { SymbolView } from 'expo-symbols';
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import { SellerMeta } from '@/components/seller-meta';
 import { ThemedText } from '@/components/themed-text';
 import { Brand } from '@/constants/brand';
 import { CARD_WIDTH } from '@/constants/layout';
 import { CardShadow } from '@/constants/shadow';
 import { Colors, Radius, Spacing } from '@/constants/theme';
-import { formatPrice, formatTimeLeft, type Listing, type MyBid } from '@/lib/types';
+import {
+  formatDateTime,
+  formatPrice,
+  formatTimeLeft,
+  hasListingEnded,
+  listingSoldAt,
+  type Listing,
+  type MyBid,
+} from '@/lib/types';
 
 // Always sized to the shared CARD_WIDTH (constants/layout.ts) — no flex
 // sizing here, so a card looks identical whether it's in the 2-column grid
@@ -35,7 +44,19 @@ export function ListingCard({
     listing.format === 'fixed'
       ? listing.priceCents
       : (listing.currentPriceCents ?? listing.startingBidCents);
-  const hasEnded = listing.endsAt ? new Date(listing.endsAt).getTime() <= Date.now() : false;
+  // Auction-only: whether the clock (or an early Buy It Now close) has
+  // actually run out — distinct from isSold below since it also gates
+  // auction-specific UI (the winning-bidder tag, the Buy It Now teaser)
+  // that a fixed-format listing never has in the first place.
+  const hasEnded = listing.format === 'auction' && hasListingEnded(listing);
+  // Same red-price-for-"not actually available" treatment as web: an ended
+  // auction (won or not — "Final price" either way) or a fixed listing
+  // with a real buyer. This is what makes a Sold-filtered result read as
+  // "this already sold, not an active listing" at a glance.
+  const isSold = hasListingEnded(listing);
+  // Undefined for an auction that ended with no bids — see listingSoldAt's
+  // own doc for why that must never render a sale date.
+  const soldAt = listingSoldAt(listing);
   const winning = myBid?.status === 'winning' && !hasEnded;
 
   return (
@@ -72,7 +93,7 @@ export function ListingCard({
               {listing.title}
             </ThemedText>
             <View style={styles.divider} />
-            <ThemedText type="smallBold" style={styles.price}>
+            <ThemedText type="smallBold" style={[styles.price, isSold && styles.priceSold]}>
               {price != null ? formatPrice(price) : '—'}
             </ThemedText>
             {listing.format === 'auction' && listing.endsAt && (
@@ -80,9 +101,17 @@ export function ListingCard({
                 {formatTimeLeft(listing.endsAt)} · {listing.bidCount ?? 0} bids
               </ThemedText>
             )}
+            {listing.format === 'auction' && soldAt && (
+              <ThemedText numberOfLines={2} style={styles.soldLabel}>
+                Sold {formatDateTime(soldAt)}
+              </ThemedText>
+            )}
             {listing.format === 'fixed' && (
-              <ThemedText themeColor="textSecondary" style={styles.meta}>
-                Buy It Now
+              <ThemedText
+                numberOfLines={isSold ? 2 : 1}
+                themeColor={isSold ? undefined : 'textSecondary'}
+                style={isSold ? styles.soldLabel : styles.meta}>
+                {isSold ? `Sold${soldAt ? ` ${formatDateTime(soldAt)}` : ''}` : 'Buy It Now'}
               </ThemedText>
             )}
             {listing.format === 'auction' && listing.buyItNowPriceCents != null && !hasEnded && (
@@ -93,6 +122,8 @@ export function ListingCard({
             <ThemedText themeColor="textSecondary" style={styles.meta}>
               {listing.freeShipping ? 'Free shipping' : `+${formatPrice(listing.shippingCostCents)} shipping`}
             </ThemedText>
+            <View style={styles.divider} />
+            <SellerMeta listing={listing} compact />
           </View>
         </Pressable>
       </View>
@@ -177,7 +208,9 @@ const styles = StyleSheet.create({
     marginVertical: 3,
   },
   price: { fontSize: 14 },
+  priceSold: { color: Brand.urgent },
   meta: { fontSize: 11, lineHeight: 14 },
+  soldLabel: { fontSize: 13, lineHeight: 17, fontWeight: '700', color: Colors.light.text },
   buyItNow: { fontSize: 11, lineHeight: 14, color: Brand.gold, fontWeight: '700' },
   // Deliberately outside/below the card itself, not inside its padded info
   // block or clipped into its rounded body — a tiny standalone, fully

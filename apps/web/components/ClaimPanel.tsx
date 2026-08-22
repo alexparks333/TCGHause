@@ -19,7 +19,7 @@ import {
 import { uploadOrderEvidence } from "@/lib/storage";
 import { formatPrice } from "@/lib/types";
 
-const REASON_LABELS: Record<ClaimReasonCode, string> = {
+export const REASON_LABELS: Record<ClaimReasonCode, string> = {
   not_as_described: "Item wasn't as described",
   not_received_no_tracking: "Never arrived (no tracking)",
   not_received_tracking_delivered: "Never arrived (tracking shows delivered)",
@@ -28,7 +28,7 @@ const REASON_LABELS: Record<ClaimReasonCode, string> = {
   transit_damage: "Arrived damaged",
 };
 
-const STATE_LABELS: Record<string, string> = {
+export const STATE_LABELS: Record<string, string> = {
   opened: "Just opened",
   negotiating: "In discussion",
   escalated: "Escalated",
@@ -50,11 +50,19 @@ export default function ClaimPanel({
   orderId,
   orderState,
   viewerIsSeller,
+  notEligibleFallback,
 }: {
   listingId: string;
   orderId: string;
   orderState: string;
   viewerIsSeller: boolean;
+  // Rendered instead of nothing when there's no claim and this order isn't
+  // eligible to start one — the order-status page (where this panel used to
+  // only ever appear) is fine staying silent there, since a seller or a
+  // non-claimable order just shouldn't show the panel at all. The Support
+  // claim-start picker (which can land on any order a user picks) needs an
+  // honest explanation instead of the panel just disappearing.
+  notEligibleFallback?: React.ReactNode;
 }) {
   const [detail, setDetail] = useState<ClaimDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,7 +89,7 @@ export default function ClaimPanel({
   if (loading) return null;
 
   if (!detail) {
-    if (orderState !== "claim_window" || viewerIsSeller) return null;
+    if (orderState !== "claim_window" || viewerIsSeller) return notEligibleFallback ?? null;
     return <FileClaimForm orderId={orderId} onFiled={refresh} />;
   }
 
@@ -195,11 +203,14 @@ function ClaimThread({
 
   return (
     <div className="mt-6 border-t border-brand-border pt-5">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <MessageSquare size={16} className="text-brand-urgent" />
         <h3 className="text-sm font-semibold text-gray-900">
           Claim — {REASON_LABELS[claim.reasonCode]}
         </h3>
+        <span className="rounded-full bg-brand-navy/10 px-2 py-0.5 text-[11px] font-mono font-semibold text-brand-navy">
+          {claim.ticketNumber}
+        </span>
         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600">
           {STATE_LABELS[claim.state] ?? claim.state}
         </span>

@@ -39,6 +39,17 @@ type Order struct {
 	ReleasedAt            *time.Time `json:"releasedAt,omitempty"`
 	CreatedAt             time.Time  `json:"createdAt"`
 	StripePaymentIntentID *string    `json:"-"`
+	// ShippingTier/SignatureRequired snapshot internal/shipping.RequiredTier
+	// (combined with the listing's own chosen preset) at order-creation time
+	// — see order.CreateFromWin. Nil ShippingTier only for orders created
+	// before this feature existed. EasypostShipmentID/LabelCostCents/LabelURL
+	// are populated once the seller actually buys a label
+	// (internal/shipping.HandleBuyLabel) — all nil until then.
+	ShippingTier       *string `json:"shippingTier,omitempty"`
+	SignatureRequired  bool    `json:"signatureRequired"`
+	EasypostShipmentID *string `json:"-"`
+	LabelCostCents     *int64  `json:"labelCostCents,omitempty"`
+	LabelURL           *string `json:"labelUrl,omitempty"`
 }
 
 const selectOrderColumns = `
@@ -46,7 +57,8 @@ const selectOrderColumns = `
 	o.subtotal_cents, o.shipping_cents, o.seller_fee_cents, o.seller_net_cents,
 	o.tax_cents, o.charged_cents, o.tracking_number, o.carrier,
 	o.shipped_at, o.delivered_at, o.claim_deadline, o.released_at, o.created_at,
-	o.stripe_payment_intent_id
+	o.stripe_payment_intent_id, o.shipping_tier, o.signature_required,
+	o.easypost_shipment_id, o.label_cost_cents, o.label_url
 `
 
 func scanOrder(row pgx.Row) (*Order, error) {
@@ -56,7 +68,8 @@ func scanOrder(row pgx.Row) (*Order, error) {
 		&o.SubtotalCents, &o.ShippingCents, &o.SellerFeeCents, &o.SellerNetCents,
 		&o.TaxCents, &o.ChargedCents, &o.TrackingNumber, &o.Carrier,
 		&o.ShippedAt, &o.DeliveredAt, &o.ClaimDeadline, &o.ReleasedAt, &o.CreatedAt,
-		&o.StripePaymentIntentID,
+		&o.StripePaymentIntentID, &o.ShippingTier, &o.SignatureRequired,
+		&o.EasypostShipmentID, &o.LabelCostCents, &o.LabelURL,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/order"
 	"auctionhous-tcg/api/internal/payment"
-	"auctionhous-tcg/api/internal/seller"
 )
 
 var (
@@ -207,7 +208,7 @@ func AcceptPartialRefund(ctx context.Context, pool *pgxpool.Pool, paymentClient 
 	// Item stays with the buyer, seller still gets paid (minus what just
 	// went back to the buyer) — the order proceeds to release, same as if
 	// the claim window had simply elapsed with no claim at all.
-	if err := order.Transition(ctx, pool, o.ID, order.StateClaimOpen, order.StateReleased); err != nil {
+	if err := releaseOrder(ctx, pool, paymentClient, o.ID); err != nil {
 		return fmt.Errorf("release order after partial refund: %w", err)
 	}
 	_, err = pool.Exec(ctx, `update claims set resolved_at = now() where id = $1`, claimID)
@@ -219,8 +220,11 @@ func AcceptPartialRefund(ctx context.Context, pool *pgxpool.Pool, paymentClient 
 // automatically) or because either party asked to escalate. Runs
 // auto-adjudication (design doc v2 §9.1) immediately: a clear case lands
 // in auto_adjudicated with its resolution already executed against Stripe;
-// everything else lands in human_review.
-func Escalate(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, claimID string) error {
+// everything else lands in human_review, which is also the one point in
+// this whole package that sends a real email — the cases that actually
+// need a person, not every claim opened (most resolve via negotiation or
+// auto-adjudication without anyone at support touching them).
+func Escalate(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, mailClient *mail.Client, webOrigin, claimID string) error {
 	c, err := Get(ctx, pool, claimID)
 	if err != nil {
 		return err
@@ -239,13 +243,54 @@ func Escalate(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Cl
 
 	resolution, liable, matched := autoAdjudicate(c.ReasonCode, o.TrackingNumber != nil, o.DeliveredAt != nil, o.ChargedCents)
 	if !matched {
-		return Transition(ctx, pool, claimID, StateEscalated, StateHumanReview)
+		if err := Transition(ctx, pool, claimID, StateEscalated, StateHumanReview); err != nil {
+			return err
+		}
+		notifyHumanReview(ctx, mailClient, webOrigin, c)
+		return nil
 	}
 
 	if err := Transition(ctx, pool, claimID, StateEscalated, StateAutoAdjudicated); err != nil {
 		return err
 	}
 	return finalizeDecision(ctx, pool, paymentClient, claimID, o, "", resolution, liable, 0, StateAutoAdjudicated)
+}
+
+// notifyHumanReview alerts support that a claim needs a person — best
+// effort: a failed/unsent email is logged, not returned, because the claim
+// having already landed in human_review is the state that actually matters
+// and must stand regardless (same "state transition is the real event"
+// reasoning as releaseOrder's Transfer failure below). Links straight into
+// the real Workers-side decide screen (apps/web/app/admin/claims/[id]) —
+// not a raw API call — now that page exists.
+func notifyHumanReview(ctx context.Context, mailClient *mail.Client, webOrigin string, c *Claim) {
+	if !mailClient.IsConfigured() {
+		return
+	}
+	subject := fmt.Sprintf("Claim %s needs review — %s", c.TicketNumber, reasonLabels[c.ReasonCode])
+	html := fmt.Sprintf(`
+		<p><strong>%s</strong> has escalated to human review — no auto-adjudication rule matched it.</p>
+		<ul>
+			<li><strong>Reason:</strong> %s</li>
+			<li><strong>Order ID:</strong> %s</li>
+		</ul>
+		<p><a href="%s/admin/claims/%s">Review and decide this claim &rarr;</a></p>
+	`, c.TicketNumber, reasonLabels[c.ReasonCode], c.OrderID, webOrigin, c.ID)
+	if err := mailClient.Send(ctx, subject, html); err != nil {
+		log.Printf("dispute: failed to send human-review notification for claim %s: %v", c.ID, err)
+	}
+}
+
+// reasonLabels gives the notification email a readable reason instead of a
+// raw enum value — the frontend has its own copy (ClaimPanel.tsx's
+// REASON_LABELS) for the UI, so this one stays unexported and backend-only.
+var reasonLabels = map[ReasonCode]string{
+	ReasonNotAsDescribed:               "Item wasn't as described",
+	ReasonNotReceivedNoTracking:        "Never arrived (no tracking)",
+	ReasonNotReceivedTrackingDelivered: "Never arrived (tracking shows delivered)",
+	ReasonPaymentFraud:                 "I didn't make this purchase",
+	ReasonBuyersRemorse:                "Changed my mind",
+	ReasonTransitDamage:                "Arrived damaged",
 }
 
 // autoAdjudicate is design doc v2 §9.1's auto-adjudication rules, pure and
@@ -338,34 +383,69 @@ func finalizeDecision(ctx context.Context, pool *pgxpool.Pool, paymentClient *pa
 		if err := executePartialRefund(ctx, pool, paymentClient, o, refundCents); err != nil {
 			return err
 		}
-		return order.Transition(ctx, pool, o.ID, order.StateClaimOpen, order.StateReleased)
+		return releaseOrder(ctx, pool, paymentClient, o.ID)
 	case ResolutionDeny:
-		return order.Transition(ctx, pool, o.ID, order.StateClaimOpen, order.StateReleased)
+		return releaseOrder(ctx, pool, paymentClient, o.ID)
 	default:
 		return fmt.Errorf("dispute: unknown resolution %q", resolution)
 	}
 }
 
+// releaseOrder transitions o.ID from claim_open to released, stamps
+// released_at, and transfers what's left of the seller's take
+// (order.ReleaseFunds) — shared by finalizeDecision's partial-refund/deny
+// resolutions and AcceptPartialRefund, the three ways a claim can resolve
+// with the seller still getting paid. A Transfer failure is logged, not
+// returned: the claim/order state transitions are the actual dispute
+// resolution and must stand regardless — a seller not yet paid out is a
+// recoverable, visible problem (retry the transfer), not a reason to leave
+// a decided claim in limbo.
+func releaseOrder(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, orderID string) error {
+	if err := order.Transition(ctx, pool, orderID, order.StateClaimOpen, order.StateReleased); err != nil {
+		return err
+	}
+	if _, err := pool.Exec(ctx, `update orders set released_at = now() where id = $1`, orderID); err != nil {
+		return fmt.Errorf("stamp released_at: %w", err)
+	}
+	if err := order.ReleaseFunds(ctx, pool, paymentClient, orderID); err != nil {
+		log.Printf("dispute: failed to release funds for order %s: %v", orderID, err)
+	}
+	return nil
+}
+
+// executeFullRefund refunds the platform-side charge in full — separate
+// charges and transfers (docs/Legal_MoneyTransitter.md) means this never
+// touches the seller's connected account at all: a full refund is only
+// reachable from claim_open -> refunded, and no Transfer to the seller has
+// ever happened by that point (Transfers only happen at release,
+// internal/order.ReleaseFunds), so there's nothing on the seller's side to
+// claw back.
 func executeFullRefund(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, o *order.Order) error {
 	if !paymentClient.IsConfigured() || o.StripePaymentIntentID == nil {
 		return nil
 	}
-	accountID, err := seller.StripeAccountID(ctx, pool, o.SellerID)
-	if err != nil {
-		return err
-	}
-	return paymentClient.Refund(ctx, accountID, *o.StripePaymentIntentID)
+	return paymentClient.Refund(ctx, *o.StripePaymentIntentID)
 }
 
+// executePartialRefund refunds part of the platform-side charge and
+// records how much on the order itself (orders.refunded_cents) — the
+// order still proceeds to released after this (the seller keeps the sale,
+// just a reduced one), and internal/order.ReleaseFunds needs this number to
+// know the eventual Transfer is seller_net_cents minus whatever's already
+// gone back to the buyer, never the full pre-refund amount.
 func executePartialRefund(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, o *order.Order, amountCents int64) error {
 	if !paymentClient.IsConfigured() || o.StripePaymentIntentID == nil {
 		return nil
 	}
-	accountID, err := seller.StripeAccountID(ctx, pool, o.SellerID)
-	if err != nil {
+	if err := paymentClient.RefundAmount(ctx, *o.StripePaymentIntentID, amountCents); err != nil {
 		return err
 	}
-	return paymentClient.RefundAmount(ctx, accountID, *o.StripePaymentIntentID, amountCents)
+	if _, err := pool.Exec(ctx, `
+		update orders set refunded_cents = refunded_cents + $1 where id = $2
+	`, amountCents, o.ID); err != nil {
+		return fmt.Errorf("record refunded amount: %w", err)
+	}
+	return nil
 }
 
 // Appeal files the one allowed appeal against a decided claim (design doc

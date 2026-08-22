@@ -53,6 +53,10 @@ function RootNavigator() {
         <Stack.Screen name="sold-history" options={{ headerShown: true, title: 'Sold History' }} />
         <Stack.Screen name="buy-history" options={{ headerShown: true, title: 'Buy History' }} />
         <Stack.Screen name="selling" options={{ headerShown: true, title: 'Selling' }} />
+        <Stack.Screen name="transactions" options={{ headerShown: true, title: 'Transactions' }} />
+        {/* title set dynamically once the order's listing has loaded — see
+            app/order/[id].tsx, same pattern as seller/[username]. */}
+        <Stack.Screen name="order/[id]" options={{ headerShown: true, title: '' }} />
         <Stack.Screen name="checkout/[id]" options={{ headerShown: true, title: 'Checkout' }} />
         {/* title/headerBackTitle set dynamically from within the screen
             itself (its own <Stack.Screen options={...}/>) once the seller's

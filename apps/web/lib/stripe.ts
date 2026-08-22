@@ -9,27 +9,20 @@ export function isStripeConfigured(): boolean {
   return Boolean(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 }
 
-// loadStripe() is meant to be called once per distinct config and reused
-// — it dynamically injects Stripe.js, so repeating it per-render would
-// inject the script again on every mount. Keyed by connected account id
-// (empty string for the platform-only, no-Connect-account case) because a
-// Stripe.js instance is bound to whichever account it was initialized
-// with: a direct charge's PaymentIntent (design doc v2 §5.3) lives on the
-// SELLER's connected account, not the platform account, and Stripe.js
-// silently fails to load a Payment Element for a clientSecret from a
-// different account context ("loaderror", no useful message) — this was a
-// real bug, a single memoized platform-only instance, before every
-// checkout started passing its seller's stripeAccountId here. See
-// CheckoutIntent.stripeAccountId and TASKS-TODO.md.
-const stripePromises = new Map<string, Promise<Stripe | null>>();
+// loadStripe() is meant to be called once and reused — it dynamically
+// injects Stripe.js, so repeating it per-render would inject the script
+// again on every mount. A single platform-only instance is correct now:
+// every checkout PaymentIntent lives on the platform's own Stripe account
+// under separate charges and transfers (docs/Legal_MoneyTransitter.md), not
+// a seller's connected account, so there's no per-seller account context
+// to initialize against anymore (that used to matter for a direct charge —
+// see this file's git history / TASKS-TODO.md for the "loaderror" bug that
+// caused).
+let stripePromise: Promise<Stripe | null> | undefined;
 
-export function getStripe(stripeAccountId?: string): Promise<Stripe | null> {
-  const key = stripeAccountId ?? "";
-  let promise = stripePromises.get(key);
-  if (!promise) {
-    const options = stripeAccountId ? { stripeAccount: stripeAccountId } : undefined;
-    promise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "", options);
-    stripePromises.set(key, promise);
+export function getStripe(): Promise<Stripe | null> {
+  if (!stripePromise) {
+    stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "");
   }
-  return promise;
+  return stripePromise;
 }

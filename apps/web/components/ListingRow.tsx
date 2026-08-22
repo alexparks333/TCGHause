@@ -16,8 +16,10 @@ import {
   formatPrice,
   formatMsLeft,
   formatSellerTier,
+  listingSoldAt,
   sellerTierIconSrc,
 } from "@/lib/types";
+import { formatDateTime } from "@/lib/format";
 import { useMsLeft } from "@/lib/useMsLeft";
 
 // eBay-style search-results row: a contained, single-photo carousel on the
@@ -137,6 +139,9 @@ export default function ListingRow({
     listing.format === "auction" && (Boolean(listing.outcome) || (msLeft !== null && msLeft <= 0));
   const isUrgent =
     listing.format === "auction" && !hasEnded && msLeft !== null && msLeft > 0 && msLeft <= 60 * 60 * 1000;
+  // Undefined for an auction that ended with no bids — see listingSoldAt's
+  // own doc for why that must never render a sale date.
+  const soldAt = listingSoldAt(listing);
 
   return (
     <div className="grid grid-cols-4 items-center gap-5 border-b border-brand-border py-3 last:border-b-0 sm:gap-10">
@@ -323,7 +328,9 @@ export default function ListingRow({
               info below. */}
           {listing.format === "fixed" ? (
             listing.buyerId ? (
-              <p className="shrink-0 text-sm font-semibold text-gray-500">Sold</p>
+              <p className="shrink-0 text-base font-semibold text-gray-900">
+                Sold{soldAt ? ` ${formatDateTime(soldAt)}` : ""}
+              </p>
             ) : isLoggedIn ? (
               <div className="shrink-0">
                 <BuyNowButton listingId={listing.id} priceCents={listing.priceCents ?? 0} />
@@ -411,6 +418,11 @@ export default function ListingRow({
                   {hasEnded ? "Ended" : msLeft !== null ? formatMsLeft(msLeft) : ""}
                 </span>
               </p>
+              {soldAt && (
+                <p className="mt-0.5 text-base font-semibold text-gray-900">
+                  Sold {formatDateTime(soldAt)}
+                </p>
+              )}
               {myBid && myBid.status === "winning" && !hasEnded && (
                 <p className="mt-1 flex items-center gap-1 text-xs font-semibold text-brand-success">
                   <Check size={14} /> Winning

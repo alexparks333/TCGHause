@@ -3,10 +3,11 @@ import Link from "next/link";
 type FooterLink = { label: string; href: string };
 
 // Every link defaults to "#" (unwired) unless a real destination exists —
-// only the Sell column points anywhere real right now. Start selling / Seller
-// fees / Seller tiers / Seller information all route through pages that
-// already exist (or, for Seller information, exist as of this change) rather
-// than being decorative like the rest of the footer still is.
+// only the Sell column and "Help & Support" point anywhere real right now.
+// Start selling / Seller fees / Seller tiers / Seller information all route
+// through pages that already exist (or, for Seller information, exist as of
+// this change) rather than being decorative like the rest of the footer
+// still is.
 const COLUMNS: { heading: string; links: FooterLink[] }[] = [
   {
     heading: "Buy",
@@ -40,7 +41,7 @@ const COLUMNS: { heading: string; links: FooterLink[] }[] = [
     heading: "Company",
     links: [
       { label: "About", href: "#" },
-      { label: "Help & Support", href: "#" },
+      { label: "Help & Support", href: "/support" },
       { label: "Terms", href: "#" },
       { label: "Privacy", href: "#" },
     ],

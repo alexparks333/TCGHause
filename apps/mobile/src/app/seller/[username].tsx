@@ -1,10 +1,12 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Avatar } from '@/components/avatar';
+import { ReviewsSection } from '@/components/account/reviews-section';
+import { StarRating } from '@/components/account/star-rating';
 import { ListingStrip } from '@/components/listing-strip';
 import { MessageSellerButton } from '@/components/message-seller-button';
 import { ThemedText } from '@/components/themed-text';
@@ -24,12 +26,12 @@ import {
 import { formatSellerTier, type Listing, type MyBid, type PublicUser } from '@/lib/types';
 
 // The mobile counterpart to apps/web/app/seller/[username]/page.tsx —
-// reachable so far only from "Sold by {username}" on the listing detail
-// screen (listing/[id].tsx). Scoped to what that entry point actually
-// needs: who they are (avatar/tier/member-since/bio), their rating, and
-// their other active listings — not a full port of web's page (no
-// review-writing form, no "message seller" button, since mobile has no
-// messaging feature built at all yet).
+// reachable from the username in SellerMeta wherever a listing renders
+// (grid tile, row, the listing detail screen). Scoped to what those entry
+// points actually need: who they are (avatar/tier/member-since/bio), their
+// full review history, and their other active listings. No review-writing
+// form (unlike web) — reviews are only ever left from a completed purchase
+// flow, which doesn't exist here yet.
 export default function SellerProfileScreen() {
   const { username } = useLocalSearchParams<{ username: string }>();
   const { session } = useSession();
@@ -40,6 +42,10 @@ export default function SellerProfileScreen() {
   const [myBidsByListingId, setMyBidsByListingId] = useState<Map<string, MyBid>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Collapsed by default — tapping the star-rating row reveals every
+  // individual review/comment (ReviewsSection, already fetched in full via
+  // getSellerReviews, just never rendered before now).
+  const [showReviews, setShowReviews] = useState(false);
 
   useEffect(() => {
     getUserByUsername(username)
@@ -145,14 +151,24 @@ export default function SellerProfileScreen() {
             <ThemedText type="small" themeColor="textSecondary">
               {formatSellerTier(profile.tier)} · Member since {memberSince}
             </ThemedText>
-            {reviews && reviews.count > 0 && (
-              <View style={styles.ratingRow}>
-                <SymbolView name="star.fill" size={14} tintColor="#E0A82E" fallback={null} />
-                <ThemedText type="smallBold">{reviews.averageRating.toFixed(1)}</ThemedText>
+            {reviews && (
+              <Pressable
+                hitSlop={8}
+                onPress={() => setShowReviews((s) => !s)}
+                style={styles.ratingRow}>
+                <StarRating rating={reviews.averageRating} size={15} />
                 <ThemedText type="small" themeColor="textSecondary">
-                  ({reviews.count} {reviews.count === 1 ? 'review' : 'reviews'})
+                  {reviews.count > 0
+                    ? `${reviews.averageRating.toFixed(1)} (${reviews.count} ${reviews.count === 1 ? 'review' : 'reviews'})`
+                    : 'No reviews yet'}
                 </ThemedText>
-              </View>
+                <SymbolView
+                  name={showReviews ? 'chevron.up' : 'chevron.down'}
+                  size={12}
+                  tintColor={Colors.light.textSecondary}
+                  fallback={null}
+                />
+              </Pressable>
             )}
             {profile.bio && (
               <ThemedText type="small" style={styles.bio}>
@@ -165,6 +181,12 @@ export default function SellerProfileScreen() {
               </View>
             )}
           </View>
+
+          {showReviews && reviews && (
+            <View style={styles.reviewsWrap}>
+              <ReviewsSection reviews={reviews.reviews} />
+            </View>
+          )}
 
           <ListingStrip
             title="Active Listings"
@@ -200,5 +222,12 @@ const styles = StyleSheet.create({
   ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: Spacing.one },
   bio: { textAlign: 'center', marginTop: Spacing.two },
   messageSellerWrap: { marginTop: Spacing.two },
+  reviewsWrap: {
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.three,
+    paddingBottom: Spacing.two,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.light.border,
+  },
   empty: { textAlign: 'center', padding: Spacing.four },
 });

@@ -40,7 +40,7 @@ func runOrderTimersLoop(ctx context.Context, pool *pgxpool.Pool, paymentClient *
 func orderTimersOnce(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client) {
 	cancelUnshippedOrders(ctx, pool, paymentClient)
 	refundUndeliveredOrders(ctx, pool, paymentClient)
-	releaseElapsedClaimWindows(ctx, pool)
+	releaseElapsedClaimWindows(ctx, pool, paymentClient)
 }
 
 // cancelUnshippedOrders enforces design doc v2 §5.2's 72-hour ship clock:
@@ -50,7 +50,7 @@ func orderTimersOnce(ctx context.Context, pool *pgxpool.Pool, paymentClient *pay
 // touches an order while it sits in this state.
 func cancelUnshippedOrders(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client) {
 	rows, err := pool.Query(ctx, `
-		select id, seller_id, stripe_payment_intent_id from orders
+		select id, stripe_payment_intent_id from orders
 		where state = $1 and updated_at < now() - interval '72 hours'
 	`, string(order.StateAwaitingShip))
 	if err != nil {
@@ -58,13 +58,13 @@ func cancelUnshippedOrders(ctx context.Context, pool *pgxpool.Pool, paymentClien
 		return
 	}
 	type row struct {
-		id, sellerID string
-		piID         *string
+		id   string
+		piID *string
 	}
 	var toCancel []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.sellerID, &r.piID); err != nil {
+		if err := rows.Scan(&r.id, &r.piID); err != nil {
 			rows.Close()
 			log.Printf("worker: scan unshipped order failed: %v", err)
 			return
@@ -78,7 +78,7 @@ func cancelUnshippedOrders(ctx context.Context, pool *pgxpool.Pool, paymentClien
 	}
 
 	for _, r := range toCancel {
-		if err := refundAndTransition(ctx, pool, paymentClient, r.id, r.sellerID, r.piID, order.StateAwaitingShip, order.StateCancelled); err != nil {
+		if err := refundAndTransition(ctx, pool, paymentClient, r.id, r.piID, order.StateAwaitingShip, order.StateCancelled); err != nil {
 			log.Printf("worker: failed to cancel unshipped order %s: %v", r.id, err)
 			continue
 		}
@@ -90,7 +90,7 @@ func cancelUnshippedOrders(ctx context.Context, pool *pgxpool.Pool, paymentClien
 // rule: SHIPPED -> REFUNDED if no delivery confirmation ever arrives.
 func refundUndeliveredOrders(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client) {
 	rows, err := pool.Query(ctx, `
-		select id, seller_id, stripe_payment_intent_id from orders
+		select id, stripe_payment_intent_id from orders
 		where state = $1 and updated_at < now() - interval '21 days'
 	`, string(order.StateShipped))
 	if err != nil {
@@ -98,13 +98,13 @@ func refundUndeliveredOrders(ctx context.Context, pool *pgxpool.Pool, paymentCli
 		return
 	}
 	type row struct {
-		id, sellerID string
-		piID         *string
+		id   string
+		piID *string
 	}
 	var toRefund []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.sellerID, &r.piID); err != nil {
+		if err := rows.Scan(&r.id, &r.piID); err != nil {
 			rows.Close()
 			log.Printf("worker: scan undelivered order failed: %v", err)
 			return
@@ -118,7 +118,7 @@ func refundUndeliveredOrders(ctx context.Context, pool *pgxpool.Pool, paymentCli
 	}
 
 	for _, r := range toRefund {
-		if err := refundAndTransition(ctx, pool, paymentClient, r.id, r.sellerID, r.piID, order.StateShipped, order.StateRefunded); err != nil {
+		if err := refundAndTransition(ctx, pool, paymentClient, r.id, r.piID, order.StateShipped, order.StateRefunded); err != nil {
 			log.Printf("worker: failed to refund undelivered order %s: %v", r.id, err)
 			continue
 		}
@@ -129,16 +129,15 @@ func refundUndeliveredOrders(ctx context.Context, pool *pgxpool.Pool, paymentCli
 // refundAndTransition issues a real Stripe refund (best-effort — a failed
 // refund is logged, not left to block the state transition entirely, since
 // the buyer having their money back is what actually matters and a stuck
-// order helps nobody) then performs the state transition.
-func refundAndTransition(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, orderID, sellerID string, piID *string, from, to order.State) error {
+// order helps nobody) then performs the state transition. No seller
+// Connect lookup needed anymore — separate charges and transfers
+// (docs/Legal_MoneyTransitter.md) means the charge being refunded always
+// lives on the platform's own Stripe account, regardless of the seller's
+// Connect state.
+func refundAndTransition(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, orderID string, piID *string, from, to order.State) error {
 	if paymentClient.IsConfigured() && piID != nil {
-		var stripeAccountID *string
-		if err := pool.QueryRow(ctx, `select stripe_account_id from users where id = $1`, sellerID).Scan(&stripeAccountID); err != nil {
-			log.Printf("worker: failed to look up seller connect account for refund on order %s: %v", orderID, err)
-		} else if stripeAccountID != nil {
-			if err := paymentClient.Refund(ctx, *stripeAccountID, *piID); err != nil {
-				log.Printf("worker: refund failed for order %s: %v", orderID, err)
-			}
+		if err := paymentClient.Refund(ctx, *piID); err != nil {
+			log.Printf("worker: refund failed for order %s: %v", orderID, err)
 		}
 	}
 	return order.Transition(ctx, pool, orderID, from, to)
@@ -150,7 +149,7 @@ func refundAndTransition(ctx context.Context, pool *pgxpool.Pool, paymentClient 
 // filed. A buyer who files a claim first moves the order to CLAIM_OPEN
 // (internal/dispute, Phase 8 — not built yet) before this timer would ever
 // fire, so this query never needs to check for an open claim itself.
-func releaseElapsedClaimWindows(ctx context.Context, pool *pgxpool.Pool) {
+func releaseElapsedClaimWindows(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client) {
 	rows, err := pool.Query(ctx, `
 		select id from orders
 		where state = $1 and claim_deadline is not null and claim_deadline < now()
@@ -182,6 +181,9 @@ func releaseElapsedClaimWindows(ctx context.Context, pool *pgxpool.Pool) {
 		}
 		if _, err := pool.Exec(ctx, `update orders set released_at = now() where id = $1`, id); err != nil {
 			log.Printf("worker: failed to stamp released_at for order %s: %v", id, err)
+		}
+		if err := order.ReleaseFunds(ctx, pool, paymentClient, id); err != nil {
+			log.Printf("worker: failed to release funds for order %s: %v", id, err)
 		}
 		log.Printf("worker: order %s released — claim window elapsed with no claim filed", id)
 	}

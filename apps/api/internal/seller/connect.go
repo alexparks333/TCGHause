@@ -92,22 +92,32 @@ func CreateOnboardingLink(ctx context.Context, pool *pgxpool.Pool, paymentClient
 	return link.URL, nil
 }
 
-// RequireChargesEnabled returns sellerID's Connect account id, only if
-// Stripe has actually enabled charges on it — the single check checkout
-// needs before creating a direct charge (design doc v2 §5.1: a listing's
-// checkout must be blocked until connect_charges_enabled = true). Returns
-// "" (not an error) if the seller has no account yet or hasn't finished
-// onboarding — callers turn that into their own "not ready to sell" error.
-func RequireChargesEnabled(ctx context.Context, pool *pgxpool.Pool, sellerID string) (string, error) {
+// RequirePayoutsEnabled returns sellerID's Connect account id, only if
+// Stripe has actually enabled payouts on it — the single check checkout
+// needs before authorizing a purchase (docs/Legal_MoneyTransitter.md /
+// separate charges and transfers: the buyer's card is charged on the
+// PLATFORM account regardless of this account's state, but there's no
+// point authorizing a sale whose eventual release-time Transfer would just
+// fail). Deliberately checks payouts, not charges enabled — under separate
+// charges and transfers a seller's connected account only ever RECEIVES a
+// Transfer and pays it out, it never accepts a charge itself, so
+// connect_charges_enabled (which requires the card_payments capability,
+// full individual KYC, and a statement descriptor this app no longer
+// requests, see payment.CreateExpressAccount) isn't the right gate anymore
+// and will simply never go true for accounts created after this change.
+// Returns "" (not an error) if the seller has no account yet or hasn't
+// finished onboarding — callers turn that into their own "not ready to
+// sell" error.
+func RequirePayoutsEnabled(ctx context.Context, pool *pgxpool.Pool, sellerID string) (string, error) {
 	var accountID *string
-	var chargesEnabled bool
+	var payoutsEnabled bool
 	err := pool.QueryRow(ctx, `
-		select stripe_account_id, connect_charges_enabled from users where id = $1
-	`, sellerID).Scan(&accountID, &chargesEnabled)
+		select stripe_account_id, connect_payouts_enabled from users where id = $1
+	`, sellerID).Scan(&accountID, &payoutsEnabled)
 	if err != nil {
 		return "", fmt.Errorf("read seller connect status: %w", err)
 	}
-	if accountID == nil || !chargesEnabled {
+	if accountID == nil || !payoutsEnabled {
 		return "", nil
 	}
 	return *accountID, nil

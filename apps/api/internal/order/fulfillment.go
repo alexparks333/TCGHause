@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/seller"
 )
 
@@ -154,7 +156,11 @@ const highValueThresholdCents = 25000
 // Trusted-release — Gold/Haus Trust sellers skipping the claim window
 // entirely — is Phase 7 scope, once the tier engine exists to know who
 // actually qualifies; every seller gets the standard window for now.
-func MarkDelivered(ctx context.Context, pool *pgxpool.Pool, orderID string) error {
+// paymentClient is only used by the trusted-release branch below (to
+// actually Transfer funds the instant delivery is confirmed) — every
+// other order still needs the ordinary claim-window timer
+// (cmd/worker.releaseElapsedClaimWindows) to do that later.
+func MarkDelivered(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, orderID string) error {
 	if _, err := pool.Exec(ctx, `update orders set delivered_at = now() where id = $1`, orderID); err != nil {
 		return fmt.Errorf("record delivered_at: %w", err)
 	}
@@ -182,8 +188,18 @@ func MarkDelivered(ctx context.Context, pool *pgxpool.Pool, orderID string) erro
 		if err := Transition(ctx, pool, orderID, StateDelivered, StateReleased); err != nil {
 			return err
 		}
-		_, err := pool.Exec(ctx, `update orders set released_at = now() where id = $1`, orderID)
-		return err
+		if _, err := pool.Exec(ctx, `update orders set released_at = now() where id = $1`, orderID); err != nil {
+			return fmt.Errorf("stamp released_at: %w", err)
+		}
+		// Best-effort, same reasoning as every other release site
+		// (internal/order/release.go's own doc comment) — a failed
+		// Transfer here must never make the carrier's delivery webhook
+		// look like it failed; the order's released state is already
+		// correct regardless.
+		if err := ReleaseFunds(ctx, pool, paymentClient, orderID); err != nil {
+			log.Printf("order: failed to release funds for trusted-tier order %s: %v", orderID, err)
+		}
+		return nil
 	}
 
 	window := 3 * 24 * time.Hour

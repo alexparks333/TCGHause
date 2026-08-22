@@ -33,12 +33,12 @@ const CONDITIONS = ['Damaged', 'Heavily Played', 'Moderately Played', 'Lightly P
 // chips rather than setting them itself).
 export type SidebarFilters = Pick<
   ListingFilters,
-  'finished' | 'fixedOnly' | 'priceMinCents' | 'priceMaxCents' | 'conditionMin' | 'timeLeftMinHours' | 'timeLeftMaxHours'
+  'sold' | 'fixedOnly' | 'priceMinCents' | 'priceMaxCents' | 'conditionMin' | 'timeLeftMinHours' | 'timeLeftMaxHours'
 >;
 
 export function hasActiveSidebarFilters(f: SidebarFilters): boolean {
   return Boolean(
-    f.finished ||
+    f.sold ||
       f.fixedOnly ||
       f.priceMinCents !== undefined ||
       f.priceMaxCents !== undefined ||
@@ -49,7 +49,7 @@ export function hasActiveSidebarFilters(f: SidebarFilters): boolean {
 }
 
 // Mobile counterpart to apps/web/components/FilterSidebar.tsx — same
-// filter set (Finished, Buy It Now only, Price, Condition, Time Left),
+// filter set (Sold, Buy It Now only, Price, Condition, Time Left),
 // applied against the same GET /listings query params. Web collapses
 // left-to-right into a slim icon rail that's permanently part of the
 // page's flex layout; that would shove every other homepage element over
@@ -180,9 +180,9 @@ export function FilterSidebar({
                 )}
 
                 <Toggle
-                  label="Finished listings"
-                  value={Boolean(draft.finished)}
-                  onChange={(v) => setDraft((d) => ({ ...d, finished: v || undefined }))}
+                  label="Sold"
+                  value={Boolean(draft.sold)}
+                  onChange={(v) => setDraft((d) => ({ ...d, sold: v || undefined }))}
                 />
                 <Toggle
                   label="Buy It Now only"

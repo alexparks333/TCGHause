@@ -1,6 +1,4 @@
 import { redirect } from "next/navigation";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { ApiError, getAdminMetrics } from "@/lib/api";
 import { formatPrice } from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
@@ -27,75 +25,71 @@ export default async function AdminMetricsPage() {
   });
 
   return (
-    <div className="flex min-h-screen flex-col bg-brand-surface">
-      <Header />
-      <main className="mx-auto w-full max-w-4xl flex-1 px-10 py-12 sm:px-12 lg:px-14">
-        <h1 className="text-xl font-bold text-gray-900">Internal metrics</h1>
-        <p className="mt-1 text-sm text-gray-500">Design doc v2 §11 — real aggregates, not projections.</p>
+    <div className="mx-auto w-full max-w-4xl">
+      <h1 className="text-xl font-bold text-gray-900">Internal metrics</h1>
+      <p className="mt-1 text-sm text-gray-500">Design doc v2 §11 — real aggregates, not projections.</p>
 
-        {error && <p className="mt-6 text-sm text-brand-urgent">{error}</p>}
+      {error && <p className="mt-6 text-sm text-brand-urgent">{error}</p>}
 
-        {metrics && (
-          <div className="mt-6 flex flex-col gap-6">
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <Stat label="Total orders" value={metrics.totalOrders.toLocaleString()} />
-              <Stat label="ACH mix" value={`${metrics.achMixPct.toFixed(1)}%`} />
-              <Stat label="Orders / active seller (30d)" value={metrics.ordersPerActiveSellerLast30d.toFixed(1)} />
-              <Stat label="ACH return rate" value={`${metrics.achReturnRatePct.toFixed(2)}%`} />
-            </div>
-
-            {metrics.avgHoursPurchaseToPayout != null && (
-              <Stat
-                label="Avg. time from purchase to payout"
-                value={`${metrics.avgHoursPurchaseToPayout.toFixed(1)}h`}
-              />
-            )}
-
-            <Table
-              title="Tier distribution of GMV"
-              rows={metrics.tierGmv}
-              columns={[
-                { key: "tier", label: "Tier" },
-                { key: "orderCount", label: "Orders" },
-                { key: "gmvCents", label: "GMV", format: formatPrice },
-              ]}
-            />
-
-            <Table
-              title="Realized margin by tier + rail"
-              rows={metrics.marginByTierRail}
-              columns={[
-                { key: "tier", label: "Tier" },
-                { key: "rail", label: "Rail" },
-                { key: "orderCount", label: "Orders" },
-                { key: "marginCents", label: "Margin", format: formatPrice },
-              ]}
-            />
-
-            <Table
-              title="Dispute rate by tier"
-              rows={metrics.disputeRateByTier}
-              columns={[
-                { key: "tier", label: "Tier" },
-                { key: "orderCount", label: "Orders" },
-                { key: "claimCount", label: "Claims" },
-                { key: "ratePct", label: "Rate", format: (v: number) => `${v.toFixed(2)}%` },
-              ]}
-            />
-
-            <Table
-              title="Rail mix"
-              rows={metrics.railMix}
-              columns={[
-                { key: "rail", label: "Rail" },
-                { key: "orderCount", label: "Orders" },
-                { key: "gmvCents", label: "GMV", format: formatPrice },
-              ]}
-            />
+      {metrics && (
+        <div className="mt-6 flex flex-col gap-6">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <Stat label="Total orders" value={metrics.totalOrders.toLocaleString()} />
+            <Stat label="ACH mix" value={`${metrics.achMixPct.toFixed(1)}%`} />
+            <Stat label="Orders / active seller (30d)" value={metrics.ordersPerActiveSellerLast30d.toFixed(1)} />
+            <Stat label="ACH return rate" value={`${metrics.achReturnRatePct.toFixed(2)}%`} />
           </div>
-        )}
-      </main>
-      <Footer />
+
+          {metrics.avgHoursPurchaseToPayout != null && (
+            <Stat
+              label="Avg. time from purchase to payout"
+              value={`${metrics.avgHoursPurchaseToPayout.toFixed(1)}h`}
+            />
+          )}
+
+          <Table
+            title="Tier distribution of GMV"
+            rows={metrics.tierGmv}
+            columns={[
+              { key: "tier", label: "Tier" },
+              { key: "orderCount", label: "Orders" },
+              { key: "gmvCents", label: "GMV", format: formatPrice },
+            ]}
+          />
+
+          <Table
+            title="Realized margin by tier + rail"
+            rows={metrics.marginByTierRail}
+            columns={[
+              { key: "tier", label: "Tier" },
+              { key: "rail", label: "Rail" },
+              { key: "orderCount", label: "Orders" },
+              { key: "marginCents", label: "Margin", format: formatPrice },
+            ]}
+          />
+
+          <Table
+            title="Dispute rate by tier"
+            rows={metrics.disputeRateByTier}
+            columns={[
+              { key: "tier", label: "Tier" },
+              { key: "orderCount", label: "Orders" },
+              { key: "claimCount", label: "Claims" },
+              { key: "ratePct", label: "Rate", format: (v: number) => `${v.toFixed(2)}%` },
+            ]}
+          />
+
+          <Table
+            title="Rail mix"
+            rows={metrics.railMix}
+            columns={[
+              { key: "rail", label: "Rail" },
+              { key: "orderCount", label: "Orders" },
+              { key: "gmvCents", label: "GMV", format: formatPrice },
+            ]}
+          />
+        </div>
+      )}
     </div>
   );
 }

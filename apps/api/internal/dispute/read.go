@@ -13,17 +13,22 @@ import (
 var ErrNotFound = errors.New("claim not found")
 
 type Claim struct {
-	ID          string       `json:"id"`
-	OrderID     string       `json:"orderId"`
-	OpenedBy    string       `json:"openedBy"`
-	ReasonCode  ReasonCode   `json:"reasonCode"`
-	State       State        `json:"state"`
-	Resolution  *Resolution  `json:"resolution,omitempty"`
-	RefundCents *int64       `json:"refundCents,omitempty"`
-	LiableParty *LiableParty `json:"liableParty,omitempty"`
-	ReviewerID  *string      `json:"reviewerId,omitempty"`
-	CreatedAt   time.Time    `json:"createdAt"`
-	ResolvedAt  *time.Time   `json:"resolvedAt,omitempty"`
+	ID string `json:"id"`
+	// TicketNo is a plain sequential number (bigserial); TicketNumber is the
+	// "CLM-000123" display form the frontend actually shows — computed here,
+	// not stored, so the format can change without a migration.
+	TicketNo     int64        `json:"ticketNo"`
+	TicketNumber string       `json:"ticketNumber"`
+	OrderID      string       `json:"orderId"`
+	OpenedBy     string       `json:"openedBy"`
+	ReasonCode   ReasonCode   `json:"reasonCode"`
+	State        State        `json:"state"`
+	Resolution   *Resolution  `json:"resolution,omitempty"`
+	RefundCents  *int64       `json:"refundCents,omitempty"`
+	LiableParty  *LiableParty `json:"liableParty,omitempty"`
+	ReviewerID   *string      `json:"reviewerId,omitempty"`
+	CreatedAt    time.Time    `json:"createdAt"`
+	ResolvedAt   *time.Time   `json:"resolvedAt,omitempty"`
 }
 
 type EventKind string
@@ -50,11 +55,11 @@ type Event struct {
 func Get(ctx context.Context, pool *pgxpool.Pool, claimID string) (*Claim, error) {
 	var c Claim
 	err := pool.QueryRow(ctx, `
-		select id, order_id, opened_by, reason_code, state, resolution, refund_cents,
+		select id, ticket_no, order_id, opened_by, reason_code, state, resolution, refund_cents,
 			liable_party, reviewer_id, created_at, resolved_at
 		from claims where id = $1
 	`, claimID).Scan(
-		&c.ID, &c.OrderID, &c.OpenedBy, &c.ReasonCode, &c.State, &c.Resolution, &c.RefundCents,
+		&c.ID, &c.TicketNo, &c.OrderID, &c.OpenedBy, &c.ReasonCode, &c.State, &c.Resolution, &c.RefundCents,
 		&c.LiableParty, &c.ReviewerID, &c.CreatedAt, &c.ResolvedAt,
 	)
 	if err != nil {
@@ -63,7 +68,14 @@ func Get(ctx context.Context, pool *pgxpool.Pool, claimID string) (*Claim, error
 		}
 		return nil, fmt.Errorf("query claim: %w", err)
 	}
+	c.TicketNumber = formatTicketNumber(c.TicketNo)
 	return &c, nil
+}
+
+// formatTicketNumber renders a claim's sequential id as the "CLM-000123"
+// form shown throughout the UI and (eventually) in claim-related emails.
+func formatTicketNumber(ticketNo int64) string {
+	return fmt.Sprintf("CLM-%06d", ticketNo)
 }
 
 // GetForOrder returns the (at most one, in practice — a second claim on an
@@ -72,12 +84,12 @@ func Get(ctx context.Context, pool *pgxpool.Pool, claimID string) (*Claim, error
 func GetForOrder(ctx context.Context, pool *pgxpool.Pool, orderID string) (*Claim, error) {
 	var c Claim
 	err := pool.QueryRow(ctx, `
-		select id, order_id, opened_by, reason_code, state, resolution, refund_cents,
+		select id, ticket_no, order_id, opened_by, reason_code, state, resolution, refund_cents,
 			liable_party, reviewer_id, created_at, resolved_at
 		from claims where order_id = $1
 		order by created_at desc limit 1
 	`, orderID).Scan(
-		&c.ID, &c.OrderID, &c.OpenedBy, &c.ReasonCode, &c.State, &c.Resolution, &c.RefundCents,
+		&c.ID, &c.TicketNo, &c.OrderID, &c.OpenedBy, &c.ReasonCode, &c.State, &c.Resolution, &c.RefundCents,
 		&c.LiableParty, &c.ReviewerID, &c.CreatedAt, &c.ResolvedAt,
 	)
 	if err != nil {
@@ -86,6 +98,7 @@ func GetForOrder(ctx context.Context, pool *pgxpool.Pool, orderID string) (*Clai
 		}
 		return nil, fmt.Errorf("query claim for order: %w", err)
 	}
+	c.TicketNumber = formatTicketNumber(c.TicketNo)
 	return &c, nil
 }
 

@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BidBox } from '@/components/bid-box';
 import { FullscreenGallery } from '@/components/fullscreen-gallery';
 import { ImageGallery } from '@/components/image-gallery';
-import { MessageSellerButton } from '@/components/message-seller-button';
+import { SellerMeta } from '@/components/seller-meta';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Brand } from '@/constants/brand';
@@ -180,25 +180,9 @@ export default function ListingDetailScreen() {
           {/* Game/Set/Card#/Condition badge row temporarily removed —
               broken, revisit later. */}
 
-          {listing.sellerUsername && (
-            <Pressable
-              hitSlop={8}
-              onPress={() => router.push(`/seller/${listing.sellerUsername}`)}>
-              <ThemedText type="small" themeColor="textSecondary">
-                Sold by <ThemedText type="small" style={styles.sellerLink}>{listing.sellerUsername}</ThemedText>
-              </ThemedText>
-            </Pressable>
-          )}
-
-          {session && session.user.id !== listing.sellerId && (
-            <View style={styles.messageSellerWrap}>
-              <MessageSellerButton
-                recipientId={listing.sellerId}
-                recipientLabel={listing.sellerUsername ?? 'Seller'}
-                listingId={listing.id}
-              />
-            </View>
-          )}
+          <View style={styles.sellerMetaWrap}>
+            <SellerMeta listing={listing} />
+          </View>
         </View>
 
         {listing.format === 'auction' ? (
@@ -323,8 +307,7 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
   },
   title: { fontSize: 20, lineHeight: 26 },
-  sellerLink: { fontWeight: '700', textDecorationLine: 'underline', color: Colors.light.text },
-  messageSellerWrap: { marginTop: Spacing.one },
+  sellerMetaWrap: { marginTop: Spacing.one },
   // Tighter gap + smaller horizontal padding than before — these are small
   // pill "bubbles" (Game/Set/Card #/Condition), not full buttons, so the
   // previous Spacing.two/Spacing.three felt like too much air between and

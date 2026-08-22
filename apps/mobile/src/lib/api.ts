@@ -1,5 +1,16 @@
 import { supabase } from './supabase';
-import type { Listing, Me, MyBid, PublicUser } from './types';
+import type {
+  Claim,
+  ClaimDetail,
+  ClaimReasonCode,
+  EvidenceType,
+  Listing,
+  Me,
+  MyBid,
+  Order,
+  OrderSummary,
+  PublicUser,
+} from './types';
 
 // Expo env vars need the EXPO_PUBLIC_ prefix to be inlined into the client
 // bundle (Expo's equivalent of Next's NEXT_PUBLIC_ convention). Must be a
@@ -54,7 +65,7 @@ export interface ListingFilters {
   game?: string;
   search?: string;
   sellerId?: string;
-  finished?: boolean;
+  sold?: boolean;
   fixedOnly?: boolean;
   priceMinCents?: number;
   priceMaxCents?: number;
@@ -68,7 +79,7 @@ export async function getActiveListings(filters: ListingFilters = {}): Promise<L
   if (filters.game) params.set('game', filters.game);
   if (filters.search) params.set('q', filters.search);
   if (filters.sellerId) params.set('seller_id', filters.sellerId);
-  if (filters.finished) params.set('finished', 'true');
+  if (filters.sold) params.set('sold', 'true');
   if (filters.fixedOnly) params.set('fixedOnly', 'true');
   if (filters.priceMinCents !== undefined) params.set('priceMin', String(filters.priceMinCents));
   if (filters.priceMaxCents !== undefined) params.set('priceMax', String(filters.priceMaxCents));
@@ -178,18 +189,36 @@ export async function saveMyAddress(address: AddressInput): Promise<Address> {
   return apiFetch('/me/address', { method: 'POST', body: JSON.stringify(address) });
 }
 
+// Mirrors apps/api/internal/feedback.Review / apps/web/lib/api.ts's Review
+// exactly (CLAUDE.md §6.3) — three rating axes, not one blended score;
+// overallRating is derived server-side (mean of the three), never stored.
+// Previously had a single `rating` field that didn't exist anywhere in the
+// real API response, so every review rendered with an undefined (empty)
+// star count regardless of its actual rating — fixed by matching the real
+// shape instead of a guessed one.
 export interface Review {
   id: string;
   sellerId: string;
   reviewerId: string;
   reviewerUsername: string | null;
-  rating: number;
+  reviewerReviewCount: number;
+  listingId: string;
+  listingTitle: string;
+  conditionAccuracy: number;
+  shippingSpeed: number;
+  trustworthiness: number;
+  overallRating: number;
   comment: string | null;
   createdAt: string;
+  sellerReply: string | null;
+  sellerReplyAt?: string;
 }
 
 export interface ReviewSummary {
   averageRating: number;
+  averageConditionAccuracy: number;
+  averageShippingSpeed: number;
+  averageTrustworthiness: number;
   count: number;
   reviews: Review[];
 }
@@ -208,6 +237,44 @@ export async function getSellerReviews(username: string): Promise<ReviewSummary>
   const res = await fetch(`${API_URL}/users/${encodeURIComponent(username)}/reviews`);
   if (!res.ok) throw new Error(`Failed to load reviews: ${res.status}`);
   return res.json();
+}
+
+export interface ReviewableListing {
+  listingId: string;
+  title: string;
+  endedAt: string;
+}
+
+// Mirrors apps/web/lib/api.ts's getReviewablePurchases exactly. Every
+// entry is a purchase from this seller the caller hasn't reviewed yet —
+// used by the order detail screen to decide whether this specific
+// listingId is still eligible for a review, rather than only finding out
+// via a 403 after submitting.
+export async function getReviewablePurchases(username: string): Promise<ReviewableListing[]> {
+  try {
+    const data = await apiFetch(`/users/${encodeURIComponent(username)}/reviewable-purchases`);
+    return data.listings ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export interface SubmitReviewInput {
+  listingId: string;
+  conditionAccuracy: number;
+  shippingSpeed: number;
+  trustworthiness: number;
+  comment?: string;
+}
+
+// Mirrors ReviewForm.tsx's submit call (POST /users/{username}/reviews) —
+// one review per (reviewer, listing) pair; re-submitting for the same
+// listing replaces it (internal/feedback.Upsert).
+export async function submitReview(username: string, input: SubmitReviewInput): Promise<void> {
+  await apiFetch(`/users/${encodeURIComponent(username)}/reviews`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 // --- Messaging (app/messages/) — mirrors apps/web/lib/api.ts's message
@@ -417,11 +484,6 @@ export async function triggerInstantPayout(): Promise<{ payoutId?: string; trigg
 export interface CheckoutIntent {
   clientSecret: string;
   paymentIntentId: string;
-  // The seller's Stripe Connect account id — this PaymentIntent is a direct
-  // charge that lives entirely on that account, not the platform account.
-  // StripeProvider must be initialized with this id (its stripeAccountId
-  // prop) or PaymentSheet fails to load the clientSecret at all.
-  stripeAccountId: string;
   amountCents: number;
 }
 
@@ -444,4 +506,84 @@ export async function buyNow(listingId: string, paymentIntentId: string): Promis
     method: 'POST',
     body: JSON.stringify({ paymentIntentId }),
   });
+}
+
+// --- Orders / Transactions (src/app/transactions.tsx, src/app/order/[id].tsx)
+// — mirrors apps/web/lib/api.ts's order + claim section exactly. ---
+
+// Every order the caller is a participant in, buyer or seller side,
+// newest first — backs the Transactions tab.
+export async function getMyOrders(): Promise<OrderSummary[]> {
+  return apiFetch('/me/orders');
+}
+
+// The order tied to a listing (backs the order detail screen), visible
+// only to that order's own buyer or seller. Throws (ApiError, 404) if this
+// listing was never paid for through the real Connect checkout path.
+export async function getOrderForListing(listingId: string): Promise<Order> {
+  return apiFetch(`/listings/${listingId}/order`);
+}
+
+// Records one evidence photo after it's already been uploaded client-side
+// to Supabase Storage (lib/storage.ts's uploadOrderEvidence) — this call
+// only ever sends the resulting URL, never the file itself.
+export async function addOrderEvidence(listingId: string, type: EvidenceType, url: string): Promise<void> {
+  await apiFetch(`/listings/${listingId}/order/evidence`, {
+    method: 'POST',
+    body: JSON.stringify({ type, url }),
+  });
+}
+
+// The seller's "mark as shipped" action — rejected (409) until the
+// required photo evidence (card front/back, sealed package) is already on
+// file, per design doc v2 §5.3.
+export async function shipOrder(listingId: string, carrier: string, trackingNumber: string): Promise<Order> {
+  return apiFetch(`/listings/${listingId}/order/ship`, {
+    method: 'POST',
+    body: JSON.stringify({ carrier, trackingNumber }),
+  });
+}
+
+// Whether this listing's order already has a claim — 404 (via ApiError,
+// caught by callers) means no claim exists yet, the common case.
+export async function getClaimForListing(listingId: string): Promise<ClaimDetail> {
+  return apiFetch(`/listings/${listingId}/order/claim`);
+}
+
+export async function openClaim(orderId: string, reasonCode: ClaimReasonCode, body: string): Promise<Claim> {
+  return apiFetch('/claims', {
+    method: 'POST',
+    body: JSON.stringify({ orderId, reasonCode, body }),
+  });
+}
+
+export async function addClaimMessage(claimId: string, body: string): Promise<void> {
+  await apiFetch(`/claims/${claimId}/messages`, { method: 'POST', body: JSON.stringify({ body }) });
+}
+
+export async function addClaimEvidence(claimId: string, url: string): Promise<void> {
+  await apiFetch(`/claims/${claimId}/evidence`, { method: 'POST', body: JSON.stringify({ url }) });
+}
+
+export async function proposePartialRefund(claimId: string, amountCents: number): Promise<void> {
+  await apiFetch(`/claims/${claimId}/partial-refund-offer`, {
+    method: 'POST',
+    body: JSON.stringify({ amountCents }),
+  });
+}
+
+export async function acceptPartialRefund(claimId: string): Promise<void> {
+  await apiFetch(`/claims/${claimId}/partial-refund-accept`, { method: 'POST' });
+}
+
+export async function resolveClaimByAgreement(claimId: string): Promise<void> {
+  await apiFetch(`/claims/${claimId}/resolve`, { method: 'POST' });
+}
+
+export async function escalateClaim(claimId: string): Promise<void> {
+  await apiFetch(`/claims/${claimId}/escalate`, { method: 'POST' });
+}
+
+export async function appealClaim(claimId: string, body: string): Promise<void> {
+  await apiFetch(`/claims/${claimId}/appeal`, { method: 'POST', body: JSON.stringify({ body }) });
 }

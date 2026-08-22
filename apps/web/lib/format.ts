@@ -11,3 +11,17 @@ export function formatRelativeTime(iso: string): string {
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
 }
+
+// The exact moment something happened — "Aug 15, 2026, 6:39 PM" — distinct
+// from formatRelativeTime's rough shorthand. Used where the precise
+// timestamp itself is the point (a Sold-filtered listing's sale time), not
+// just a sense of how long ago it was.
+export function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}

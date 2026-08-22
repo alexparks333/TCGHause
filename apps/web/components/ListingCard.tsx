@@ -14,8 +14,10 @@ import {
   formatPrice,
   formatMsLeft,
   formatSellerTier,
+  listingSoldAt,
   sellerTierIconSrc,
 } from "@/lib/types";
+import { formatDateTime } from "@/lib/format";
 import { useMsLeft } from "@/lib/useMsLeft";
 import { usePokeCelebrations } from "./CelebrationWatcher";
 
@@ -123,6 +125,9 @@ export default function ListingCard({
     listing.format === "auction" && (Boolean(listing.outcome) || (msLeft !== null && msLeft <= 0));
   const isUrgent =
     listing.format === "auction" && !hasEnded && msLeft !== null && msLeft > 0 && msLeft <= 60 * 60 * 1000;
+  // Undefined for an auction that ended with no bids — that's ended, not
+  // sold, and must never render a sale date (see listingSoldAt's own doc).
+  const soldAt = listingSoldAt(listing);
 
   // Only animate the transition into "ended" — a card that's already
   // ended the moment it first mounts (shouldn't happen where removeOnEnd
@@ -335,6 +340,11 @@ export default function ListingCard({
                   {hasEnded ? "Ended" : msLeft !== null ? formatMsLeft(msLeft) : ""}
                 </span>
               </p>
+              {soldAt && (
+                <p className="mt-0.5 text-sm font-semibold text-gray-900">
+                  Sold {formatDateTime(soldAt)}
+                </p>
+              )}
               {myBid && myBid.status === "winning" && !hasEnded && (
                 <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-brand-success">
                   <Check size={12} /> Top bidder · up to {formatPrice(myBid.myMaxBidCents)}
@@ -368,7 +378,9 @@ export default function ListingCard({
                   : `+${formatPrice(listing.shippingCostCents)} shipping`}
               </p>
               {listing.buyerId ? (
-                <p className="mt-2 text-xs font-semibold text-gray-500">Sold</p>
+                <p className="mt-2 text-sm font-semibold text-gray-900">
+                  Sold{soldAt ? ` ${formatDateTime(soldAt)}` : ""}
+                </p>
               ) : isLoggedIn ? (
                 <div className="mt-2">
                   <BuyNowButton listingId={listing.id} priceCents={listing.priceCents ?? 0} />

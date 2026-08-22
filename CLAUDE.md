@@ -2,16 +2,26 @@
 
 This is the initial engineering guide for building AuctionHous - TCG: a P2P auction and
 fixed-price marketplace for trading cards and graded slabs, undercutting TCGplayer/eBay
-fee structures (~2% vs. ~13.25%) via a pre-funded site wallet + escrow architecture.
-**The wallet half of that is currently on hold** — see the note at the top of §5.1 and
-§7; this file still describes the wallet architecture as designed so the eventual
-rebuild has something to build from, but no wallet code exists in the repo right now.
+fee structures (a 5.5–7% tiered seller commission + $0.30, Gold-tier headline of "6% +
+$0.30" quoted against eBay's ~13.6%) via Stripe Connect **direct charges** — money goes
+straight to the seller's own Stripe account, never a platform-held balance.
+**The originally-planned pre-funded site wallet is removed, not on hold pending a
+redesign** — see the note at the top of §5.1 and §7; this file still describes the old
+wallet architecture below so the history is legible, but no wallet code exists in the
+repo, and the direct-charge model isn't a stopgap, it's the actual resolution to the
+money-transmitter exposure that shut the wallet down (see `docs/PercentageModel.md` §11).
 
-**Source of truth for the business model:** [`docs/design-doc.md`](docs/design-doc.md)
-(fees, escrow timers, seller tiers, dispute protocol). This file does not repeat that
-content — it translates it into a concrete system architecture, borrowing heavily from
-eBay's 25+ years of battle-tested marketplace mechanics, adapted to the TCG/collectibles
-domain and our 2% margin.
+**Source of truth for the business model:** [`docs/PercentageModel.md`](docs/PercentageModel.md)
+for every fee/tier/payout number (supersedes the flat-2%/wallet-based numbers below and
+in `docs/design-doc.md`, which is now "v1" — kept for its escrow-timer and dispute-protocol
+detail, which PercentageModel.md doesn't repeat, but its 2.0% flat fee and 3-tier seller
+system are stale). This file does not repeat that content — it translates it into a
+concrete system architecture, borrowing heavily from eBay's 25+ years of battle-tested
+marketplace mechanics, adapted to the TCG/collectibles domain and our 5.5–7% margin.
+**Known follow-up, not yet done:** §6.4 below ("Seller tiers & performance standards")
+and §4 ("Core domain model")'s `SellerTierState` still describe design-doc.md's old
+Tier 1/2/3 ladder, not PercentageModel.md's real New/Bronze/Silver/Gold/Haus Trust
+5-tier system — that section needs a pass to match, separate from this fee-number fix.
 
 **Status:** the repo now has a working scaffold — `apps/web` (marketplace homepage +
 listing detail pages, mock data), `apps/api` (Go module, builds and boots), and a real
@@ -129,7 +139,7 @@ most here — need real native camera/notification ergonomics. See §9, open que
 ## 5. Engineering principles (non-obvious, must-follow)
 
 These are the rules that are easy to violate accidentally and expensive to get wrong
-in a system that moves real money on a 2% margin.
+in a system that moves real money on a 5.5–7% margin.
 
 **5.1 The wallet is removed for now — wallet deposits are on hold pending legal review
 of money-transmitter licensing exposure (§7), explicit product decision.** The
@@ -247,6 +257,12 @@ doesn't spell out:
   for fraud loss), keep it as-is.
 
 ### 6.5 Dispute resolution
+
+**Status: built, not just designed.** `internal/dispute` is a real, live state machine
+(negotiation, auto-adjudication, Stripe refund execution, one-appeal ladder) — the
+design below is what it was built from, not a plan still waiting on implementation.
+Ticket numbers and a real Workers-side queue/decide UI for the human-review path
+covered here are in §6.17.
 
 eBay's mechanic (Money Back Guarantee / Resolution Center): buyer opens a case →
 seller has a fixed window to respond with evidence (tracking, photos) → escalate to
@@ -734,6 +750,59 @@ wizard's Step 1 that autofills Set/Card Number/Rarity.
   misrepresentation), so autofilling a stock catalog image would undermine the exact thing that
   requirement is for.
 
+### 6.17 Claim ticket numbers, the animated Support claim picker, and the Workers admin dashboard
+
+Not eBay-derived so much as filling real gaps under §6.5's dispute engine
+(`internal/dispute`) — which was already fully real before this section existed: state
+machine, auto-adjudication, Stripe refund execution, negotiation thread, all live. What
+was still missing was a human-facing ticket number, a way to *reach* the claim flow
+without already being on the right order page, and — the bigger gap — any way at all
+for a hired reviewer to see or decide a `human_review` claim without calling the API
+directly with curl.
+
+- **Ticket numbers**: `claims.ticket_no` (migration `0033_claim_ticket_numbers`,
+  `bigserial`), formatted at read time as `CLM-000123`
+  (`internal/dispute.formatTicketNumber`) rather than stored pre-formatted, so the
+  display format can change without a migration. Surfaced as `Claim.TicketNumber` on
+  every claim API response, shown as a badge everywhere a claim renders
+  (`ClaimPanel.tsx`'s thread header, the admin queue, the decide screen).
+- **`/support/claim`** replaced its original "go find your order in Buy History/Sold
+  History" links with an animated, in-place picker (`components/ClaimStart.tsx`): role
+  choice ("I'm a Buyer"/"I'm a Seller") → a shortened list of the caller's matching
+  recent orders (real `GET /me/orders` data, filtered client-side, capped at 6 with a
+  "view all" escape hatch) → the real claim sheet, reusing `ClaimPanel` rather than a
+  second claim form. Since this picker can land on *any* order someone picks (not just
+  one already known to be claimable), `ClaimPanel` gained an optional
+  `notEligibleFallback` prop — an honest explanation ("only the buyer can open a
+  claim," "this order isn't in its claim window") instead of the panel silently
+  rendering nothing, which is fine on the order-status page (only ever shown when
+  eligible) but wasn't fine here.
+- **The Workers admin dashboard** (`app/admin/layout.tsx`) is the first piece of what's
+  meant to grow into a full internal ops side, deliberately *not* another page wearing
+  the storefront's `<Header />`/`<Footer />` — no search bar, no category nav, no Sell
+  button. A dark sidebar (`AuctionHous` / `Workers`, nav links with active-state
+  highlighting via `components/AdminSidebarNav.tsx`, a "back to site" link) wraps every
+  `/admin/*` route and owns the login gate once instead of repeating it per page. Same
+  `ADMIN_EMAILS` allowlist gate as everything else admin-only in this repo (§6.4-
+  adjacent `internal/user.IsAdmin`) — no real role system yet.
+  - **`/admin/claims`** — a queue over claims (`internal/dispute.ListForAdmin`, a
+    denormalized join mirroring `order.Summary`'s "no N+1 per row" shape), with tabs
+    for "Needs Review" (`human_review`), "Appealed", and "All" (`?state=all` is its
+    own sentinel, distinct from the param being absent, so the All tab doesn't just
+    re-show the default filter).
+  - **`/admin/claims/{id}`** — the decide screen: order/listing context, the full
+    negotiation thread (read-only — an admin is neither the claim's buyer nor seller,
+    so none of `ClaimPanel`'s participant-gated mutation actions apply), and a decide
+    form (resolution/liable party/refund amount) calling the `decide`/`decide-appeal`
+    endpoints that already existed — this page adds a UI, not new business logic.
+- **The `support@` email notification** (`internal/mail`, Resend) fires exactly once —
+  when a claim reaches `human_review` — not on every claim opened, since most resolve
+  via negotiation or auto-adjudication without a human ever touching them. Also fires
+  from the real path that lands a claim in `human_review` in production
+  (`cmd/worker/claim_timer.go`'s 48-hour auto-escalation loop), not just the manual
+  "Escalate this claim" button. Full setup, DNS records, and how it was verified
+  end-to-end against a real inbox: `docs/Resend.md`.
+
 ---
 
 ## 7. Compliance flags (non-engineering, but architecture-shaping)
@@ -767,11 +836,16 @@ Account creation (done — see §6.12). Listing creation and auction bidding (do
 page, homepage/listing-detail/Buying/Selling/Bids-Offers all on live data, no mock
 listings left in the frontend — see §6.13). Category filtering + a basic real search
 box are also done (§6.14) — full relevance/price sorting and full-text search are
-still the v1 gap, per §6.7. Buyer/seller messaging is done (§6.15). Still to build: fixed-price checkout (the
+still the v1 gap, per §6.7. Buyer/seller messaging is done (§6.15). The dispute
+resolution flow is done (§6.5, §6.17) — real state machine, auto-adjudication, Stripe
+refunds, claim ticket numbers, and a Workers-side admin queue/decide UI gated by
+`ADMIN_EMAILS`, plus a live `support@` email notification via Resend (`docs/Resend.md`)
+when a claim needs a human. Still to build: fixed-price checkout (the
 "Buy It Now" button is a real listing but a disabled placeholder — no order/payment
 flow behind it yet), cart batching for sub-$20 singles, escrow state machine, seller
-Tier 1–3, feedback + detailed ratings, dispute resolution flow, cert-number grading
-verification, domestic shipping integration. **Wallet + ledger
+Tier 1–3 (§6.4's tier ladder itself is real — see `internal/seller` — this refers to
+the rest of the eBay-style seller-standards machinery), feedback + detailed ratings,
+cert-number grading verification, domestic shipping integration. **Wallet + ledger
 is explicitly removed from v1 scope, not just unbuilt** — see §5.1/§7; it's blocked on
 legal review, not on engineering bandwidth, so don't schedule it as ordinary backlog
 work.

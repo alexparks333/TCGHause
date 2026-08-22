@@ -20,7 +20,7 @@ export function ReviewsSection({ reviews }: { reviews: Review[] }) {
         <View key={review.id} style={styles.item}>
           <View style={styles.itemHeader}>
             <ThemedText type="smallBold">{review.reviewerUsername ?? 'A buyer'}</ThemedText>
-            <StarRating rating={review.rating} size={13} />
+            <StarRating rating={review.overallRating} size={13} />
           </View>
           {review.comment && <ThemedText type="small">{review.comment}</ThemedText>}
           <ThemedText type="small" themeColor="textSecondary">

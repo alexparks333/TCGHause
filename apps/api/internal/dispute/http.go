@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/order"
 	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/platform"
@@ -198,7 +199,7 @@ func HandleAcceptPartialRefund(pool *pgxpool.Pool, paymentClient *payment.Client
 	}
 }
 
-func HandleEscalate(pool *pgxpool.Pool, paymentClient *payment.Client) http.HandlerFunc {
+func HandleEscalate(pool *pgxpool.Pool, paymentClient *payment.Client, mailClient *mail.Client, webOrigin string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		callerID, ok := platform.UserIDFromContext(r.Context())
 		if !ok {
@@ -214,7 +215,7 @@ func HandleEscalate(pool *pgxpool.Pool, paymentClient *payment.Client) http.Hand
 			http.Error(w, err.Error(), statusFor(err))
 			return
 		}
-		if err := Escalate(r.Context(), pool, paymentClient, c.ID); err != nil {
+		if err := Escalate(r.Context(), pool, paymentClient, mailClient, webOrigin, c.ID); err != nil {
 			http.Error(w, err.Error(), statusFor(err))
 			return
 		}
@@ -337,5 +338,72 @@ func HandleDecideAppeal(pool *pgxpool.Pool, paymentClient *payment.Client, admin
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// --- Admin claims queue ---
+//
+// Turns the decide/decide-appeal calls above into something a hired
+// reviewer can actually work from a browser, instead of a raw authenticated
+// API call — the first piece of what CLAUDE.md's "Workers side" is meant to
+// grow into. Same minimal-admin-surface caveat as everything else in this
+// file: gated by the ADMIN_EMAILS allowlist, not a real user/role system.
+
+type adminClaimDetail struct {
+	Claim  *AdminClaimSummary `json:"claim"`
+	Events []Event            `json:"events"`
+}
+
+// HandleAdminList backs the claims queue page — ?state= narrows to one
+// state (e.g. human_review, the "needs a decision" queue); omitted returns
+// everything, newest first, for a full history view.
+func HandleAdminList(pool *pgxpool.Pool, adminEmails string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		callerID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !user.IsAdmin(r.Context(), pool, adminEmails, callerID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		claims, err := ListForAdmin(r.Context(), pool, r.URL.Query().Get("state"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(claims)
+	}
+}
+
+// HandleAdminGet backs the claim detail/decide screen — full negotiation
+// thread plus the order/listing context GetForAdmin denormalizes, so a
+// reviewer never has to separately look up the order to know what they're
+// deciding on.
+func HandleAdminGet(pool *pgxpool.Pool, adminEmails string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		callerID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !user.IsAdmin(r.Context(), pool, adminEmails, callerID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		c, err := GetForAdmin(r.Context(), pool, r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), statusFor(err))
+			return
+		}
+		events, err := Events(r.Context(), pool, c.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(adminClaimDetail{Claim: c, Events: events})
 	}
 }

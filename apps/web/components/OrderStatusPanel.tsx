@@ -1,15 +1,18 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { CheckCircle2, Circle, Loader2, Package, Truck } from "lucide-react";
+import { CheckCircle2, Circle, Loader2, Package, Tag, Truck } from "lucide-react";
 import {
   addOrderEvidence,
+  buyShippingLabel,
   shipOrder,
   type EvidenceType,
   type Order,
   type OrderState,
+  type ShippingLabel,
 } from "@/lib/api";
 import { uploadOrderEvidence } from "@/lib/storage";
+import { ORDER_STEPS, ORDER_OFF_PATH_LABELS } from "@/lib/orderSteps";
 
 // The real state-machine-driven order-status view (design doc v2 §5) —
 // replaces the old "shipping isn't wired up yet" placeholder. Renders
@@ -54,35 +57,16 @@ export default function OrderStatusPanel({
   );
 }
 
-const STEPS: { state: OrderState; label: string }[] = [
-  { state: "paid", label: "Paid" },
-  { state: "awaiting_ship", label: "Awaiting shipment" },
-  { state: "shipped", label: "Shipped" },
-  { state: "delivered", label: "Delivered" },
-  { state: "claim_window", label: "Claim window" },
-  { state: "released", label: "Released to seller" },
-];
-
-// A terminal state (refunded/cancelled) or claim_open falls outside the
-// happy-path steps above — shown as its own line rather than forced onto
-// the linear timeline, since it isn't a step in a sequence so much as an
-// exit from it.
-const OFF_PATH_LABELS: Partial<Record<OrderState, string>> = {
-  cancelled: "Cancelled — refunded in full",
-  refunded: "Refunded",
-  claim_open: "Claim open — under review",
-};
-
 function Timeline({ state }: { state: OrderState }) {
-  const offPath = OFF_PATH_LABELS[state];
+  const offPath = ORDER_OFF_PATH_LABELS[state];
   if (offPath) {
     return <p className="text-sm font-semibold text-brand-urgent">{offPath}</p>;
   }
 
-  const currentIndex = STEPS.findIndex((s) => s.state === state);
+  const currentIndex = ORDER_STEPS.findIndex((s) => s.state === state);
   return (
     <ol className="flex flex-wrap items-center gap-x-2 gap-y-3">
-      {STEPS.map((step, i) => {
+      {ORDER_STEPS.map((step, i) => {
         const done = currentIndex >= 0 && i <= currentIndex;
         return (
           <li key={step.state} className="flex items-center gap-1.5">
@@ -94,7 +78,7 @@ function Timeline({ state }: { state: OrderState }) {
             <span className={done ? "text-sm font-medium text-gray-900" : "text-sm text-gray-400"}>
               {step.label}
             </span>
-            {i < STEPS.length - 1 && <span className="mx-1 text-gray-300">→</span>}
+            {i < ORDER_STEPS.length - 1 && <span className="mx-1 text-gray-300">→</span>}
           </li>
         );
       })}
@@ -121,7 +105,24 @@ function SellerFulfillment({
   const [trackingNumber, setTrackingNumber] = useState("");
   const [shipping, setShipping] = useState(false);
   const [error, setError] = useState("");
+  const [label, setLabel] = useState<ShippingLabel | null>(null);
+  const [buyingLabel, setBuyingLabel] = useState(false);
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  async function handleBuyLabel() {
+    setBuyingLabel(true);
+    setError("");
+    try {
+      const bought = await buyShippingLabel(order.listingId);
+      setLabel(bought);
+      setCarrier(bought.carrier);
+      setTrackingNumber(bought.trackingNumber);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't buy a shipping label.");
+    } finally {
+      setBuyingLabel(false);
+    }
+  }
 
   async function handleUpload(type: EvidenceType, file: File) {
     setBusyType(type);
@@ -198,31 +199,75 @@ function SellerFulfillment({
       </div>
 
       {allUploaded && (
-        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-          <select
-            value={carrier}
-            onChange={(e) => setCarrier(e.target.value)}
-            className="rounded-lg border border-brand-border px-3 py-2 text-sm outline-none focus:border-brand-navy"
-          >
-            <option value="">Carrier</option>
-            <option value="USPS">USPS</option>
-            <option value="UPS">UPS</option>
-            <option value="FedEx">FedEx</option>
-          </select>
-          <input
-            value={trackingNumber}
-            onChange={(e) => setTrackingNumber(e.target.value)}
-            placeholder="Tracking number"
-            className="flex-1 rounded-lg border border-brand-border px-3 py-2 text-sm outline-none focus:border-brand-navy"
-          />
-          <button
-            type="button"
-            onClick={handleShip}
-            disabled={shipping || !carrier || !trackingNumber}
-            className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-brand-gold px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-gold-light disabled:opacity-60"
-          >
-            <Truck size={14} /> Mark as shipped
-          </button>
+        <div className="mt-4 flex flex-col gap-3">
+          {label ? (
+            <div className="rounded-lg border border-brand-success/30 bg-brand-success/5 p-3 text-sm">
+              <p className="flex items-center gap-1.5 font-medium text-brand-success">
+                <Tag size={14} /> Label purchased — {label.carrier} {label.service}
+              </p>
+              <p className="mt-1 text-xs text-gray-600">
+                Tracking: <span className="font-medium">{label.trackingNumber}</span> · $
+                {(label.costCents / 100).toFixed(2)}
+              </p>
+              <a
+                href={label.labelUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 inline-block text-xs font-medium text-brand-navy hover:underline"
+              >
+                Print label / show QR code
+              </a>
+            </div>
+          ) : (
+            <div>
+              <button
+                type="button"
+                onClick={handleBuyLabel}
+                disabled={buyingLabel}
+                className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-brand-navy px-4 py-2 text-sm font-semibold text-brand-navy transition-colors hover:bg-brand-navy/5 disabled:opacity-60"
+              >
+                {buyingLabel ? <Loader2 size={14} className="animate-spin" /> : <Tag size={14} />}
+                Buy a shipping label
+              </button>
+              {order.shippingTier && order.shippingTier !== "standard" && (
+                <p className="mt-1.5 text-xs text-gray-500">
+                  {order.shippingTier === "signature"
+                    ? "This sale requires a signature on delivery."
+                    : "This sale requires carrier tracking."}
+                </p>
+              )}
+              <p className="mt-1 text-xs text-gray-400">
+                Or enter tracking manually below if you&apos;re shipping it yourself.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <select
+              value={carrier}
+              onChange={(e) => setCarrier(e.target.value)}
+              className="rounded-lg border border-brand-border px-3 py-2 text-sm outline-none focus:border-brand-navy"
+            >
+              <option value="">Carrier</option>
+              <option value="USPS">USPS</option>
+              <option value="UPS">UPS</option>
+              <option value="FedEx">FedEx</option>
+            </select>
+            <input
+              value={trackingNumber}
+              onChange={(e) => setTrackingNumber(e.target.value)}
+              placeholder="Tracking number"
+              className="flex-1 rounded-lg border border-brand-border px-3 py-2 text-sm outline-none focus:border-brand-navy"
+            />
+            <button
+              type="button"
+              onClick={handleShip}
+              disabled={shipping || !carrier || !trackingNumber}
+              className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-brand-gold px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-gold-light disabled:opacity-60"
+            >
+              <Truck size={14} /> Mark as shipped
+            </button>
+          </div>
         </div>
       )}
       {error && <p className="mt-2 text-xs text-brand-urgent">{error}</p>}

@@ -27,7 +27,7 @@ import {
   watchListing,
 } from '@/lib/api';
 import { getRecentlyViewedIds } from '@/lib/recently-viewed';
-import type { Game, Listing, MyBid } from '@/lib/types';
+import { hasListingEnded, type Game, type Listing, type MyBid } from '@/lib/types';
 
 const HOT_AUCTIONS_LIMIT = 10;
 
@@ -84,7 +84,10 @@ export default function BrowseScreen() {
   const loadRecentlyViewed = useCallback(async () => {
     const ids = await getRecentlyViewedIds(HOT_AUCTIONS_LIMIT);
     const results = await Promise.all(ids.map((id) => getListing(id).catch(() => null)));
-    setRecentlyViewed(results.filter((l): l is Listing => l !== null));
+    // Viewing something that later sells or ends doesn't keep it here — the
+    // only place to still find it is a Sold-filtered search, same rule as
+    // Watchlist/Live Auctions/an unfiltered browse.
+    setRecentlyViewed(results.filter((l): l is Listing => l !== null && !hasListingEnded(l)));
   }, []);
 
   // Watch state and "am I winning" are per-account — fetched once per
@@ -181,15 +184,17 @@ export default function BrowseScreen() {
   }
 
   // Three states, not two: the curated strips (nothing filtered), a 2-col
-  // grid of ListingCard (a game bubble and/or a FilterSidebar preset
+  // grid of ListingCard (a game bubble and/or most FilterSidebar presets
   // applied — "keep it looking like the vertical badges on the homepage,"
   // not the search-results row list), and the single-column ListingRow
-  // list (a text search was actually submitted). Game/sidebar filters
-  // narrow the same tile grid the homepage already uses; only typing a
-  // search deliberately switches the visual language to eBay-style search
-  // results.
+  // list. Two things force the row list: an actual text search, or the
+  // Sold filter — Sold is browsing *old, no-longer-active* listings (an
+  // eBay-style search-results task), not the current grid of live ones, so
+  // it gets the same "results page" visual language a search does rather
+  // than reading like more of the active homepage grid.
   const showStrips = !activeGame && !submittedQuery && !hasActiveSidebarFilters(sidebarFilters);
-  const layoutMode: 'strips' | 'grid' | 'list' = submittedQuery ? 'list' : showStrips ? 'strips' : 'grid';
+  const isRowLayout = Boolean(submittedQuery) || Boolean(sidebarFilters.sold);
+  const layoutMode: 'strips' | 'grid' | 'list' = isRowLayout ? 'list' : showStrips ? 'strips' : 'grid';
 
   // Deliberately ONE component tree regardless of layoutMode — this used to
   // be two different `return`s (a ScrollView-of-strips branch vs. a

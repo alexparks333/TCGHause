@@ -62,6 +62,10 @@ export interface Listing {
   priceCents?: number;
   freeShipping: boolean;
   shippingCostCents: number;
+  // The seller's chosen preset at listing time (Sell wizard's Step3Price) —
+  // a floor only; the actual order may ship stricter, see
+  // Order.shippingTier's doc comment in lib/api.ts.
+  shippingTier: "standard" | "tracked" | "signature";
   imageUrls: string[];
   watcherCount: number;
   status: string;
@@ -106,6 +110,33 @@ export interface Listing {
   // auction that closed with no bids at all never has one). Backs Sold
   // History, the seller-side mirror of Buy History's own sellerUsername.
   buyerUsername?: string;
+}
+
+// A listing that's no longer an active, purchasable offer — an auction
+// that's ended (whether it sold or not) or a fixed-price listing that
+// already sold. GET /listings and its filters (apps/api/internal/listing's
+// ListActive) already exclude these by default; this is for the couple of
+// screens that fetch a listing directly by id instead (Watchlist here,
+// Recently Viewed on mobile) and so bypass that server-side filter
+// entirely — Recently Viewed/Watchlist/Live Auctions/an unfiltered browse
+// must never surface an ended or sold listing, only the Sold filter should.
+export function hasListingEnded(listing: Listing): boolean {
+  if (listing.format === "fixed") return Boolean(listing.buyerId);
+  return Boolean(listing.outcome) || (listing.endsAt ? new Date(listing.endsAt).getTime() <= Date.now() : false);
+}
+
+// The exact moment a listing actually sold, or undefined if it never did —
+// including an auction that simply timed out with no bids: closedAt is set
+// for that case too (close.go stamps it regardless of outcome), but it must
+// never be shown as a "sold" date since there was no sale. Distinct from
+// MyBid/purchase-history's own date logic (that data only ever contains
+// listings the caller actually won/bought in the first place, so it doesn't
+// need this same guard) — this is for rendering a sale date on a listing
+// card/row in a general Sold-filtered result set, which can include any
+// auction's outcome.
+export function listingSoldAt(listing: Listing): string | undefined {
+  if (listing.format === "fixed") return listing.buyerId ? listing.soldAt : undefined;
+  return listing.outcome === "sold" || listing.outcome === "bought_now" ? listing.closedAt : undefined;
 }
 
 export interface MyBid {

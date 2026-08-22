@@ -27,6 +27,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"auctionhous-tcg/api/internal/auction"
+	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/platform"
 )
@@ -59,6 +60,10 @@ func main() {
 	defer pool.Close()
 
 	paymentClient := payment.NewClient(cfg.StripeSecretKey)
+	mailClient := mail.NewClient(cfg.ResendAPIKey, cfg.ClaimsNotifyFrom, cfg.ClaimsNotifyTo)
+	if !mailClient.IsConfigured() {
+		log.Println("RESEND_API_KEY not set — claim human-review email notifications disabled (see apps/api/.env.example)")
+	}
 
 	log.Printf("worker: starting, closing ended auctions every %s, order timers every %s, tier recompute every %s, claim timers every %s",
 		closeInterval, orderTimerInterval, tierRecomputeInterval, claimTimerInterval)
@@ -83,7 +88,7 @@ func main() {
 	}()
 	go func() {
 		defer wg.Done()
-		runClaimTimerLoop(ctx, pool, paymentClient)
+		runClaimTimerLoop(ctx, pool, paymentClient, mailClient, cfg.WebOrigin)
 	}()
 	wg.Wait()
 

@@ -17,7 +17,7 @@ export default async function Home({
   const params = await searchParams;
   const game = paramStr(params, "game");
   const q = paramStr(params, "q");
-  const finished = paramBool(params, "finished");
+  const sold = paramBool(params, "sold");
   const fixedOnly = paramBool(params, "fixedOnly");
   const conditionMin = paramStr(params, "conditionMin");
   const priceMinCents = paramNum(params, "priceMin");
@@ -28,7 +28,7 @@ export default async function Home({
   const isFiltered =
     Boolean(game) ||
     Boolean(q) ||
-    finished ||
+    sold ||
     fixedOnly ||
     Boolean(conditionMin) ||
     priceMinCents !== undefined ||
@@ -51,7 +51,7 @@ export default async function Home({
     getActiveListings({
       game,
       search: q,
-      finished,
+      sold,
       fixedOnly,
       conditionMin,
       priceMinCents,

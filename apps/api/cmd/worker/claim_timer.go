@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"auctionhous-tcg/api/internal/dispute"
+	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/payment"
 )
 
@@ -15,8 +16,8 @@ import (
 // negotiation window drifting by a few minutes is invisible to anyone.
 const claimTimerInterval = 15 * time.Minute
 
-func runClaimTimerLoop(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client) {
-	claimTimerOnce(ctx, pool, paymentClient)
+func runClaimTimerLoop(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, mailClient *mail.Client, webOrigin string) {
+	claimTimerOnce(ctx, pool, paymentClient, mailClient, webOrigin)
 
 	ticker := time.NewTicker(claimTimerInterval)
 	defer ticker.Stop()
@@ -26,7 +27,7 @@ func runClaimTimerLoop(ctx context.Context, pool *pgxpool.Pool, paymentClient *p
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			claimTimerOnce(ctx, pool, paymentClient)
+			claimTimerOnce(ctx, pool, paymentClient, mailClient, webOrigin)
 		}
 	}
 }
@@ -34,8 +35,11 @@ func runClaimTimerLoop(ctx context.Context, pool *pgxpool.Pool, paymentClient *p
 // claimTimerOnce auto-escalates any claim that's sat in direct negotiation
 // for 48 hours with no resolution (design doc v2 §9.1's first rung —
 // "most issues die here," but the ones that don't need to keep moving
-// rather than sit open forever).
-func claimTimerOnce(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client) {
+// rather than sit open forever). This is the real path that lands a claim
+// in human_review in production — a human rarely clicks "escalate" faster
+// than the timer does — so it's also the real path that fires the
+// support@ notification email (internal/dispute.notifyHumanReview).
+func claimTimerOnce(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, mailClient *mail.Client, webOrigin string) {
 	rows, err := pool.Query(ctx, `
 		select id from claims
 		where state = $1 and created_at < now() - interval '48 hours'
@@ -61,7 +65,7 @@ func claimTimerOnce(ctx context.Context, pool *pgxpool.Pool, paymentClient *paym
 	}
 
 	for _, id := range ids {
-		if err := dispute.Escalate(ctx, pool, paymentClient, id); err != nil {
+		if err := dispute.Escalate(ctx, pool, paymentClient, mailClient, webOrigin, id); err != nil {
 			log.Printf("worker: failed to auto-escalate claim %s: %v", id, err)
 			continue
 		}

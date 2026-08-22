@@ -4,6 +4,35 @@ import type { FormEvent } from "react";
 import type { WizardData, UpdateField } from "../SellWizard";
 import MoneyInput from "./MoneyInput";
 
+// Three shipping presets, one per internal/shipping.Tier value — a floor
+// the seller opts into, not a guarantee: the backend always re-derives the
+// required tier from the final sale price and ships at whichever is
+// stricter (see WizardData.shippingTier's doc comment). Presented by
+// packaging, since that's what the seller is actually choosing between;
+// the price-driven tracking/signature requirements are explained inline
+// rather than left as a surprise later.
+const SHIPPING_PRESETS: {
+  value: WizardData["shippingTier"];
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "standard",
+    label: "Bubble Mailer",
+    description: "Bubble mailer + protective guard. Cheapest option, no tracking required.",
+  },
+  {
+    value: "tracked",
+    label: "Bubble Mailer, Tracked",
+    description: "Same packaging, with carrier tracking.",
+  },
+  {
+    value: "signature",
+    label: "Box + Signature Required",
+    description: "Rigid box, tracked, and requires the buyer's signature on delivery.",
+  },
+];
+
 // Real product decision (CLAUDE.md §6.1): auctions run 2 days, 3.5 days, or
 // 7 days — nothing else. The 1/2/5-minute options only exist to dissect the
 // bidding engine without waiting days per test auction, and are compiled out
@@ -153,6 +182,38 @@ export default function Step3Price({
           placeholder="4.99"
         />
       )}
+
+      <div>
+        <p className="text-sm font-medium text-gray-700">How will you ship this?</p>
+        <div className="mt-2 flex flex-col gap-2">
+          {SHIPPING_PRESETS.map((preset) => (
+            <label
+              key={preset.value}
+              className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
+                data.shippingTier === preset.value
+                  ? "border-brand-navy bg-brand-navy/5"
+                  : "border-gray-200 hover:bg-brand-surface"
+              }`}
+            >
+              <input
+                type="radio"
+                checked={data.shippingTier === preset.value}
+                onChange={() => update("shippingTier", preset.value)}
+                className="mt-0.5 h-4 w-4 accent-brand-navy"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-gray-900">{preset.label}</span>
+                <span className="block text-xs text-gray-500">{preset.description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-gray-400">
+          Sales over $100 require tracking and sales over $500 require a signature,
+          regardless of what&apos;s picked here — a low starting bid that ends up selling
+          higher will automatically ship at the tier the final price requires.
+        </p>
+      </div>
 
       {error && <p className="text-sm text-brand-urgent">{error}</p>}
 

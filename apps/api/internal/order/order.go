@@ -99,6 +99,25 @@ type CreateInput struct {
 	Tier                  string
 	TierPct               float64
 	StripePaymentIntentID string
+	// StripeChargeID is the platform-side charge this order's payment
+	// actually captured against — separate charges and transfers
+	// (docs/Legal_MoneyTransitter.md) means this charge lives on the
+	// platform's own Stripe account, never a seller's connected account.
+	// Empty for the ACH rail (still clearing at order-creation time — no
+	// charge exists yet) and for the no-Stripe mock-payment path.
+	StripeChargeID string
+	// ShippingTier/SignatureRequired are a permanent snapshot, computed by
+	// the caller (internal/shipping.Max(listingsPreset,
+	// shipping.RequiredTier(subtotalCents))) at the moment of sale — same
+	// "never recomputed after the fact" rule as TierPct above, and for the
+	// same reason: a seller changing their listing-time preset after the
+	// fact must never retroactively loosen what an already-sold order ships
+	// at. Deliberately plain strings/bool here, not internal/shipping.Tier
+	// itself — this package doesn't import internal/shipping (which already
+	// imports internal/order for the delivery webhook), so the caller does
+	// the tier arithmetic and hands over the already-decided result.
+	ShippingTier      string
+	SignatureRequired bool
 }
 
 // CreateFromWin inserts one orders row (state=created) and its single
@@ -136,24 +155,32 @@ func CreateFromWin(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, 
 		processingCostCents = int64(q.BankCost)
 	}
 
+	shippingTier := in.ShippingTier
+	if shippingTier == "" {
+		shippingTier = "standard"
+	}
+
 	var orderID string
 	err := pool.QueryRow(ctx, `
 		insert into orders (
 			buyer_id, seller_id, state, rail, tier_at_sale, tier_pct_at_sale,
 			subtotal_cents, shipping_cents, fee_base_cents, seller_fee_cents,
 			seller_net_cents, discount_cents, tax_cents, charged_cents,
-			processing_cost_cents, stripe_payment_intent_id
+			processing_cost_cents, stripe_payment_intent_id, stripe_charge_id,
+			shipping_tier, signature_required
 		) values (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10,
 			$11, $12, $13, $14,
-			$15, $16
+			$15, $16, $17,
+			$18, $19
 		) returning id
 	`,
 		buyerID, sellerID, string(StateCreated), string(in.Rail), in.Tier, in.TierPct,
 		int64(q.Subtotal), int64(q.Shipping), feeBase, int64(q.SellerFee),
 		int64(q.SellerNet), discountCents, taxCents, chargedCents,
-		processingCostCents, nullableString(in.StripePaymentIntentID),
+		processingCostCents, nullableString(in.StripePaymentIntentID), nullableString(in.StripeChargeID),
+		shippingTier, in.SignatureRequired,
 	).Scan(&orderID)
 	if err != nil {
 		return "", fmt.Errorf("insert order: %w", err)

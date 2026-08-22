@@ -2,11 +2,20 @@ import { Image } from 'expo-image';
 import { SymbolView } from 'expo-symbols';
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import { SellerMeta } from '@/components/seller-meta';
 import { ThemedText } from '@/components/themed-text';
 import { Brand } from '@/constants/brand';
 import { CardShadow } from '@/constants/shadow';
 import { Colors, Radius, Spacing } from '@/constants/theme';
-import { formatPrice, formatTimeLeft, type Listing, type MyBid } from '@/lib/types';
+import {
+  formatDateTime,
+  formatPrice,
+  formatTimeLeft,
+  hasListingEnded,
+  listingSoldAt,
+  type Listing,
+  type MyBid,
+} from '@/lib/types';
 
 // eBay-style search-result row — image left, info right, full width,
 // vertically stacked list. Distinct from ListingCard (the grid/strip tile)
@@ -29,7 +38,13 @@ export function ListingRow({
     listing.format === 'fixed'
       ? listing.priceCents
       : (listing.currentPriceCents ?? listing.startingBidCents);
-  const hasEnded = listing.endsAt ? new Date(listing.endsAt).getTime() <= Date.now() : false;
+  // See listing-card.tsx's own copy of these two for why hasEnded is
+  // scoped to auctions while isSold covers both formats.
+  const hasEnded = listing.format === 'auction' && hasListingEnded(listing);
+  const isSold = hasListingEnded(listing);
+  // Undefined for an auction that ended with no bids — see listingSoldAt's
+  // own doc for why that must never render a sale date.
+  const soldAt = listingSoldAt(listing);
   const winning = myBid?.status === 'winning' && !hasEnded;
 
   return (
@@ -62,7 +77,7 @@ export function ListingRow({
               {listing.title}
             </ThemedText>
             <View style={styles.divider} />
-            <ThemedText type="smallBold" style={styles.price}>
+            <ThemedText type="smallBold" style={[styles.price, isSold && styles.priceSold]}>
               {price != null ? formatPrice(price) : '—'}
             </ThemedText>
             {listing.format === 'auction' && listing.endsAt ? (
@@ -70,8 +85,16 @@ export function ListingRow({
                 {formatTimeLeft(listing.endsAt)} · {listing.bidCount ?? 0} bids
               </ThemedText>
             ) : (
-              <ThemedText numberOfLines={1} themeColor="textSecondary" style={styles.meta}>
-                Buy It Now
+              <ThemedText
+                numberOfLines={isSold ? 2 : 1}
+                themeColor={isSold ? undefined : 'textSecondary'}
+                style={isSold ? styles.soldLabel : styles.meta}>
+                {isSold ? `Sold${soldAt ? ` ${formatDateTime(soldAt)}` : ''}` : 'Buy It Now'}
+              </ThemedText>
+            )}
+            {listing.format === 'auction' && soldAt && (
+              <ThemedText numberOfLines={2} style={styles.soldLabel}>
+                Sold {formatDateTime(soldAt)}
               </ThemedText>
             )}
             {winning && (
@@ -89,6 +112,8 @@ export function ListingRow({
             <ThemedText numberOfLines={1} themeColor="textSecondary" style={styles.meta}>
               {listing.freeShipping ? 'Free shipping' : `+${formatPrice(listing.shippingCostCents)} shipping`}
             </ThemedText>
+            <View style={styles.divider} />
+            <SellerMeta listing={listing} compact />
           </View>
         </Pressable>
       </View>
@@ -106,7 +131,13 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: 'row',
-    alignItems: 'center',
+    // flex-start, not center — the info column (title/price/meta/seller
+    // row) can end up taller than the fixed-size image, and centering
+    // against it was leaving visible blank space above *and* below the
+    // photo. Top-aligning means the image sits flush with the first line
+    // of text, the way a normal list row reads, with any leftover space
+    // only below (never above) whichever side is shorter.
+    alignItems: 'flex-start',
     gap: Spacing.three,
     padding: Spacing.two,
     borderRadius: Radius.lg,
@@ -155,7 +186,9 @@ const styles = StyleSheet.create({
   title: { fontSize: 14, lineHeight: 18, fontWeight: '600' },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: Colors.light.border, marginVertical: 2 },
   price: { fontSize: 18 },
+  priceSold: { color: Brand.urgent },
   meta: { fontSize: 12, lineHeight: 16 },
+  soldLabel: { fontSize: 15, lineHeight: 19, fontWeight: '700', color: Colors.light.text },
   buyItNow: { fontSize: 12, lineHeight: 16, color: Brand.gold, fontWeight: '700' },
   // Same pill as ListingCard's winningTag (bg #2E9E5B, white bold text) —
   // in the info column now, alongside price/bids/shipping, instead of a

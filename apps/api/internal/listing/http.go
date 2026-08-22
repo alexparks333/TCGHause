@@ -97,7 +97,7 @@ func queryFloat64(q url.Values, key string) *float64 {
 }
 
 // HandleList serves GET /listings with every filter from ListFilters as a
-// query param (§6.14, §6.15): seller_id, game, q, finished, fixedOnly,
+// query param (§6.14, §6.15): seller_id, game, q, sold, fixedOnly,
 // priceMin/priceMax (cents), conditionMin, timeLeftMin/timeLeftMax (hours)
 // — the real data behind the account "Selling" page, the homepage category
 // filter + search box, and the Filters sidebar.
@@ -108,7 +108,7 @@ func HandleList(pool *pgxpool.Pool) http.HandlerFunc {
 			SellerID:         q.Get("seller_id"),
 			Game:             q.Get("game"),
 			Search:           q.Get("q"),
-			Finished:         q.Get("finished") == "true",
+			Sold:             q.Get("sold") == "true",
 			FixedOnly:        q.Get("fixedOnly") == "true",
 			PriceMinCents:    queryInt64(q, "priceMin"),
 			PriceMaxCents:    queryInt64(q, "priceMax"),

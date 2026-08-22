@@ -1,0 +1,70 @@
+package order
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"auctionhous-tcg/api/internal/payment"
+	"auctionhous-tcg/api/internal/seller"
+)
+
+// ReleaseFunds is the money-movement half of every path that lands an
+// order in the released state (claim window elapsed with no claim,
+// MarkDelivered's trusted-seller instant release, or a claim resolving in
+// the seller's favor) — separate charges and transfers
+// (docs/Legal_MoneyTransitter.md) means the buyer's charge has sat in the
+// PLATFORM's own Stripe balance the whole time up to this point, so
+// reaching released doesn't move any money on its own; this is the one
+// explicit Transfer call that actually does. Callers are expected to have
+// already performed the released state transition (and stamped
+// released_at) before calling this — ReleaseFunds only ever moves money,
+// it never touches order state itself.
+//
+// The transferred amount is seller_net_cents minus refunded_cents — a
+// partial refund (internal/dispute.executePartialRefund) comes entirely
+// out of the seller's take, never the platform's fee, so by the time an
+// order actually reaches released its remaining entitlement may already be
+// less than what was quoted at sale time. Best-effort: a failed Transfer is
+// returned to the caller to log, never left to block the order's state
+// transition that already happened — a seller not yet paid out is a
+// recoverable, visible problem; an order stuck mid-transition helps no one.
+func ReleaseFunds(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, orderID string) error {
+	if !paymentClient.IsConfigured() {
+		return nil
+	}
+
+	var sellerID string
+	var sellerNetCents, refundedCents int64
+	if err := pool.QueryRow(ctx, `
+		select seller_id, seller_net_cents, refunded_cents from orders where id = $1
+	`, orderID).Scan(&sellerID, &sellerNetCents, &refundedCents); err != nil {
+		return fmt.Errorf("read order for release: %w", err)
+	}
+
+	amountCents := sellerNetCents - refundedCents
+	if amountCents <= 0 {
+		return nil
+	}
+
+	stripeAccountID, err := seller.StripeAccountID(ctx, pool, sellerID)
+	if err != nil {
+		return err
+	}
+	if stripeAccountID == "" {
+		return fmt.Errorf("order %s: seller %s has no stripe account to transfer to", orderID, sellerID)
+	}
+
+	tr, err := paymentClient.CreateTransfer(ctx, stripeAccountID, amountCents)
+	if err != nil {
+		return fmt.Errorf("transfer released funds: %w", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		update orders set stripe_transfer_id = $1 where id = $2
+	`, tr.ID, orderID); err != nil {
+		return fmt.Errorf("record transfer id: %w", err)
+	}
+	return nil
+}

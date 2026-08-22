@@ -9,7 +9,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Colors, Spacing } from '@/constants/theme';
 import { useSession } from '@/lib/auth-context';
 import { getListing, getMyBids, getMyWatchedIds, unwatchListing } from '@/lib/api';
-import type { Listing, MyBid } from '@/lib/types';
+import { hasListingEnded, type Listing, type MyBid } from '@/lib/types';
 
 // The mobile counterpart to apps/web/app/account/watchlist/page.tsx — same
 // data (getMyWatchedIds -> getListing per id, no dedicated "my watched
@@ -39,7 +39,10 @@ export default function WatchlistScreen() {
         getMyBids().catch(() => [] as MyBid[]),
       ]);
       const results = await Promise.all(Array.from(ids).map((id) => getListing(id).catch(() => null)));
-      setListings(results.filter((l): l is Listing => l !== null));
+      // Watching something that later sells or ends doesn't keep it here —
+      // the only place to still find it is a Sold-filtered search, same
+      // rule as Recently Viewed/Live Auctions/an unfiltered browse.
+      setListings(results.filter((l): l is Listing => l !== null && !hasListingEnded(l)));
       setMyBidsByListingId(new Map(bids.map((b) => [b.listing.id, b])));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load your watchlist');

@@ -18,6 +18,7 @@ import (
 	"auctionhous-tcg/api/internal/dispute"
 	"auctionhous-tcg/api/internal/feedback"
 	"auctionhous-tcg/api/internal/listing"
+	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/message"
 	"auctionhous-tcg/api/internal/metrics"
 	"auctionhous-tcg/api/internal/notification"
@@ -93,6 +94,11 @@ func main() {
 		mux.HandleFunc("GET /listings/counts", listing.HandleCounts(pool))
 		mux.HandleFunc("GET /listings/{id}", listing.HandleGet(pool))
 		paymentClient := payment.NewClient(cfg.StripeSecretKey)
+		shippingClient := shipping.NewClient(cfg.EasyPostAPIKey)
+		mailClient := mail.NewClient(cfg.ResendAPIKey, cfg.ClaimsNotifyFrom, cfg.ClaimsNotifyTo)
+		if !mailClient.IsConfigured() {
+			log.Println("RESEND_API_KEY not set — claim human-review email notifications disabled (see apps/api/.env.example)")
+		}
 		listing.RequireSellerOnboarded = paymentClient.IsConfigured()
 		if !paymentClient.IsConfigured() {
 			log.Println("STRIPE_SECRET_KEY not set — Buy It Now falls back to its no-payment mock path (see apps/api/.env.example)")
@@ -115,9 +121,15 @@ func main() {
 			mux.Handle("POST /me/payout/standard", verifier.RequireAuth(payout.HandleTriggerStandard(pool, paymentClient)))
 			mux.Handle("GET /me/payout/summary", verifier.RequireAuth(payout.HandleSummary(pool)))
 
+			mux.Handle("GET /me/orders", verifier.RequireAuth(order.HandleListMine(pool)))
 			mux.Handle("GET /listings/{id}/order", verifier.RequireAuth(order.HandleGetForListing(pool)))
 			mux.Handle("POST /listings/{id}/order/evidence", verifier.RequireAuth(order.HandleAddEvidence(pool)))
 			mux.Handle("POST /listings/{id}/order/ship", verifier.RequireAuth(order.HandleShip(pool)))
+			if !shippingClient.IsConfigured() {
+				log.Println("EASYPOST_API_KEY not set — shipping-label purchase disabled (see apps/api/.env.example)")
+			} else {
+				mux.Handle("POST /listings/{id}/order/shipping-label", verifier.RequireAuth(shipping.HandleBuyLabel(pool, shippingClient)))
+			}
 
 			mux.Handle("GET /listings/{id}/order/claim", verifier.RequireAuth(dispute.HandleGetForListing(pool)))
 			mux.Handle("POST /claims", verifier.RequireAuth(dispute.HandleOpen(pool)))
@@ -127,13 +139,15 @@ func main() {
 			mux.Handle("POST /claims/{id}/resolve", verifier.RequireAuth(dispute.HandleResolveByAgreement(pool)))
 			mux.Handle("POST /claims/{id}/partial-refund-offer", verifier.RequireAuth(dispute.HandleProposePartialRefund(pool)))
 			mux.Handle("POST /claims/{id}/partial-refund-accept", verifier.RequireAuth(dispute.HandleAcceptPartialRefund(pool, paymentClient)))
-			mux.Handle("POST /claims/{id}/escalate", verifier.RequireAuth(dispute.HandleEscalate(pool, paymentClient)))
+			mux.Handle("POST /claims/{id}/escalate", verifier.RequireAuth(dispute.HandleEscalate(pool, paymentClient, mailClient, cfg.WebOrigin)))
 			mux.Handle("POST /claims/{id}/appeal", verifier.RequireAuth(dispute.HandleAppeal(pool)))
 			// Minimal admin-only surface (email allowlist, see
 			// internal/dispute/http.go's doc comment — no real admin app
 			// exists in this repo yet).
 			mux.Handle("POST /claims/{id}/decide", verifier.RequireAuth(dispute.HandleDecide(pool, paymentClient, cfg.AdminEmails)))
 			mux.Handle("POST /claims/{id}/decide-appeal", verifier.RequireAuth(dispute.HandleDecideAppeal(pool, paymentClient, cfg.AdminEmails)))
+			mux.Handle("GET /admin/claims", verifier.RequireAuth(dispute.HandleAdminList(pool, cfg.AdminEmails)))
+			mux.Handle("GET /admin/claims/{id}", verifier.RequireAuth(dispute.HandleAdminGet(pool, cfg.AdminEmails)))
 
 			mux.Handle("GET /admin/metrics", verifier.RequireAuth(metrics.HandleGet(pool, cfg.AdminEmails)))
 		}
@@ -154,7 +168,7 @@ func main() {
 			// internal/shipping/webhook.go on why this is a shared-secret
 			// HMAC stand-in rather than a real carrier vendor's signature
 			// scheme.
-			mux.HandleFunc("POST /webhooks/carrier", shipping.HandleDeliveryWebhook(pool, cfg.CarrierWebhookSecret))
+			mux.HandleFunc("POST /webhooks/carrier", shipping.HandleDeliveryWebhook(pool, paymentClient, cfg.CarrierWebhookSecret))
 		}
 
 		mux.Handle("POST /listings/{id}/bids", verifier.RequireAuth(auction.HandlePlaceBid(pool)))

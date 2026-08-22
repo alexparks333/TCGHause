@@ -13,19 +13,23 @@ import { getActiveListings, getMyWatchedIds, unwatchListing, watchListing } from
 import type { Listing } from '@/lib/types';
 
 // Mirrors apps/web's Selling page (app/account/selling) exactly — same two
-// sections (Active / Finished), same data (getActiveListings scoped to the
-// caller's own sellerId, fetched twice: once live, once with finished:true),
-// same outcome/paid badges on the Finished grid. Laid out as ListingCard's
-// own 2-column grid (same reasoning as watchlist.tsx) instead of a row
-// list, since this is meant to look like a grid of your own listings, not
-// a history table. Reachable only from the account sidebar's "Selling"
-// link — not a bottom-tab screen, per explicit product decision.
-function outcomeBadge(listing: Listing): { label: string; sold: boolean } {
-  if (listing.format === 'fixed') {
-    return listing.buyerId ? { label: 'Sold', sold: true } : { label: 'Unsold', sold: false };
-  }
-  if (listing.outcome === 'no_bids') return { label: 'No Bids', sold: false };
-  return { label: 'Sold', sold: true };
+// sections (Active / Sold), same data (getActiveListings scoped to the
+// caller's own sellerId, fetched twice: once live, once with sold:true),
+// same paid badge on the Sold grid. Laid out as ListingCard's own 2-column
+// grid (same reasoning as watchlist.tsx) instead of a row list, since this
+// is meant to look like a grid of your own listings, not a history table.
+// Reachable only from the account sidebar's "Selling" link — not a
+// bottom-tab screen, per explicit product decision.
+//
+// Every listing this grid ever receives actually sold — getActiveListings
+// is called with { sold: true } below, and apps/api/internal/listing's
+// Sold filter only ever returns a real sale (a fixed listing with a
+// buyer_id, or an auction whose outcome is "sold"/"bought_now"). An auction
+// that timed out with zero bids is just as "ended" but was never a sale,
+// so it's excluded entirely rather than showing up here mislabeled — no
+// "Unsold"/"No Bids" badge to render anymore.
+function paymentBadge(listing: Listing): { label: string; paid: boolean } {
+  return listing.paidAt ? { label: 'Paid', paid: true } : { label: 'Awaiting payment', paid: false };
 }
 
 function ListingGrid({
@@ -43,22 +47,19 @@ function ListingGrid({
   return (
     <View style={styles.grid}>
       {listings.map((listing) => {
-        const outcome = showOutcome ? outcomeBadge(listing) : null;
+        const payment = showOutcome ? paymentBadge(listing) : null;
         return (
           <View key={listing.id} style={styles.gridItem}>
-            {outcome && (
+            {payment && (
               <View style={styles.outcomeRow}>
-                <View style={[styles.outcomeBadge, outcome.sold ? styles.outcomeSold : styles.outcomeUnsold]}>
-                  <ThemedText style={styles.outcomeText}>{outcome.label}</ThemedText>
+                <View style={[styles.outcomeBadge, styles.outcomeSold]}>
+                  <ThemedText style={styles.outcomeText}>Sold</ThemedText>
                 </View>
-                {outcome.sold && (
-                  <View
-                    style={[styles.outcomeBadge, listing.paidAt ? styles.outcomePaid : styles.outcomeAwaiting]}>
-                    <ThemedText style={listing.paidAt ? styles.outcomeTextPaid : styles.outcomeTextAwaiting}>
-                      {listing.paidAt ? 'Paid' : 'Awaiting payment'}
-                    </ThemedText>
-                  </View>
-                )}
+                <View style={[styles.outcomeBadge, payment.paid ? styles.outcomePaid : styles.outcomeAwaiting]}>
+                  <ThemedText style={payment.paid ? styles.outcomeTextPaid : styles.outcomeTextAwaiting}>
+                    {payment.label}
+                  </ThemedText>
+                </View>
               </View>
             )}
             <ListingCard
@@ -77,7 +78,7 @@ function ListingGrid({
 export default function SellingScreen() {
   const { session } = useSession();
   const [active, setActive] = useState<Listing[]>([]);
-  const [finished, setFinished] = useState<Listing[]>([]);
+  const [sold, setSold] = useState<Listing[]>([]);
   const [watchedIds, setWatchedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -86,19 +87,19 @@ export default function SellingScreen() {
   const load = useCallback(async () => {
     if (!session) {
       setActive([]);
-      setFinished([]);
+      setSold([]);
       setWatchedIds(new Set());
       return;
     }
     try {
       setError(null);
-      const [mine, mineFinished, ids] = await Promise.all([
+      const [mine, mineSold, ids] = await Promise.all([
         getActiveListings({ sellerId: session.user.id }),
-        getActiveListings({ sellerId: session.user.id, finished: true }),
+        getActiveListings({ sellerId: session.user.id, sold: true }),
         getMyWatchedIds().catch(() => new Set<string>()),
       ]);
       setActive(mine);
-      setFinished(mineFinished);
+      setSold(mineSold);
       setWatchedIds(ids);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load your listings');
@@ -119,13 +120,13 @@ export default function SellingScreen() {
 
   // Same watcherCount-patching fix as (tabs)/index.tsx and
   // seller/[username].tsx — a listing can appear in both the Active and
-  // Finished grids' underlying arrays only in theory (they're disjoint
+  // Sold grids' underlying arrays only in theory (they're disjoint
   // server-side), but patching both is still cheap and correct either way.
   function patchWatcherCount(listingId: string, next: (count: number) => number) {
     const patch = (list: Listing[]) =>
       list.map((l) => (l.id === listingId ? { ...l, watcherCount: next(l.watcherCount) } : l));
     setActive(patch);
-    setFinished(patch);
+    setSold(patch);
   }
 
   async function handleToggleWatch(listingId: string) {
@@ -151,7 +152,7 @@ export default function SellingScreen() {
     }
   }
 
-  const isEmpty = active.length === 0 && finished.length === 0;
+  const isEmpty = active.length === 0 && sold.length === 0;
 
   return (
     <ThemedView style={styles.container}>
@@ -189,15 +190,15 @@ export default function SellingScreen() {
               )}
 
               <ThemedText type="smallBold" style={[styles.sectionTitle, styles.sectionTitleSpaced]}>
-                Finished
+                Sold
               </ThemedText>
-              {finished.length === 0 ? (
+              {sold.length === 0 ? (
                 <ThemedText type="small" themeColor="textSecondary" style={styles.sectionEmpty}>
-                  Nothing has ended yet.
+                  Nothing has sold yet.
                 </ThemedText>
               ) : (
                 <ListingGrid
-                  listings={finished}
+                  listings={sold}
                   watchedIds={watchedIds}
                   onToggleWatch={handleToggleWatch}
                   showOutcome
@@ -232,7 +233,6 @@ const styles = StyleSheet.create({
   outcomeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   outcomeBadge: { alignSelf: 'flex-start', paddingHorizontal: Spacing.two, paddingVertical: 2, borderRadius: Radius.full },
   outcomeSold: { backgroundColor: '#2E9E5B' },
-  outcomeUnsold: { backgroundColor: '#D64545' },
   outcomeText: { color: '#ffffff', fontWeight: '600', fontSize: 11 },
   outcomePaid: { backgroundColor: 'rgba(46,158,91,0.1)' },
   outcomeAwaiting: { backgroundColor: 'rgba(214,69,69,0.1)' },

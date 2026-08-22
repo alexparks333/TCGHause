@@ -3,6 +3,19 @@
 // hold pending money-transmitter legal review; Stripe TEST keys don't
 // touch that, they're free and unrestricted). See internal/auction's
 // checkout.go for how this fits into the atomic purchase flow.
+//
+// Charges are "separate charges and transfers" (docs/Legal_MoneyTransitter.md),
+// not direct charges: every PaymentIntent below is created on the PLATFORM's
+// own Stripe account — the buyer's card is charged there, and the money sits
+// in the platform's own balance for as long as the order sits in escrow.
+// Money only ever reaches a seller's connected account via an explicit
+// CreateTransfer call, made once (internal/order.ReleaseFunds) when an order
+// actually reaches the released state — never automatically at charge time.
+// This is what keeps the legal story from docs/Legal_MoneyTransitter.md
+// intact: funds never leave Stripe's own ledger until they resolve to
+// exactly one of two destinations (the seller, on release, or the buyer, on
+// refund), and a seller's connected account never independently holds a
+// balance beyond what's already been released to them.
 package payment
 
 import (
@@ -40,30 +53,15 @@ func (c *Client) IsConfigured() bool {
 // what lets two buyers safely authorize a card for the same listing at the
 // same time — the loser's hold gets Cancel'd, never charged.
 //
-// stripeAccountID is the seller's Connect Express account id — a TRUE
-// direct charge (design doc v2 §5.3): created directly on the connected
-// account via the Stripe-Account header, so the seller is merchant of
-// record and the money lands in their balance the instant it captures.
-// This is deliberately NOT on_behalf_of/transfer_data (those are for
-// destination charges, a different Connect charge type). Empty
-// stripeAccountID falls back to a plain platform-account charge — only
-// used by paths that predate Connect (none, after this phase lands, but
-// kept so the method degrades safely rather than panicking on a zero
-// value). applicationFeeCents is the platform's cut of THIS charge (seller
-// fee + any tax being swept, design doc v2 §8) — zero omits the field
-// entirely rather than sending an explicit 0. paymentMethodID, if set, is
-// already scoped to stripeAccountID (see CloneSavedCardToConnectedAccount)
-// — never a platform-level Customer's raw payment method id, which
-// wouldn't exist on the connected account at all. connectedCustomerID must
-// be set whenever paymentMethodID is: cloning a payment method that's
-// already attached to a customer (every saved card is) makes Stripe attach
-// the clone to a shadow Customer on the connected account too
-// (CloneSavedCardToConnectedAccount's return value carries its id), and
-// Stripe then requires that id back here on every PaymentIntent that reuses
-// it — "the payment method you provided is attached to a customer so for
-// security purposes you must provide the customer in the request" is the
-// exact error otherwise, on every confirm attempt, not just the first,
-// since nothing about the request changes between retries.
+// Created entirely on the PLATFORM account — no Stripe-Account header, no
+// connected-account context at all. This is a "separate charges and
+// transfers" flow, not a direct charge: the seller isn't merchant of
+// record, and the money lands in the platform's own balance, not theirs
+// (see this package's doc comment). paymentMethodID/customerID are the
+// buyer's own PLATFORM-level saved payment method and Customer id
+// (internal/paymentmethod) — charged directly, no cloning onto a connected
+// account required, since there's no connected-account context to clone
+// onto anymore.
 //
 // PaymentMethodTypes is pinned to just "card" — deliberately NOT
 // AutomaticPaymentMethods, which was the original implementation and a
@@ -76,7 +74,7 @@ func (c *Client) IsConfigured() bool {
 // doc v2 §2.7 says must never be ambiguous. Pinning this the same way
 // CreateAchIntent already pins itself to "us_bank_account" keeps the two
 // rails' Payment Elements strictly non-overlapping.
-func (c *Client) CreateIntent(ctx context.Context, listingID, buyerID, stripeAccountID string, amountCents, applicationFeeCents int64, paymentMethodID, connectedCustomerID string) (pi *stripe.PaymentIntent, err error) {
+func (c *Client) CreateIntent(ctx context.Context, listingID, buyerID string, amountCents int64, paymentMethodID, customerID string) (pi *stripe.PaymentIntent, err error) {
 	params := &stripe.PaymentIntentCreateParams{
 		Amount:             stripe.Int64(amountCents),
 		Currency:           stripe.String(string(stripe.CurrencyUSD)),
@@ -90,14 +88,8 @@ func (c *Client) CreateIntent(ctx context.Context, listingID, buyerID, stripeAcc
 	if paymentMethodID != "" {
 		params.PaymentMethod = stripe.String(paymentMethodID)
 	}
-	if connectedCustomerID != "" {
-		params.Customer = stripe.String(connectedCustomerID)
-	}
-	if stripeAccountID != "" {
-		params.SetStripeAccount(stripeAccountID)
-		if applicationFeeCents > 0 {
-			params.ApplicationFeeAmount = stripe.Int64(applicationFeeCents)
-		}
+	if customerID != "" {
+		params.Customer = stripe.String(customerID)
 	}
 	pi, err = c.sc.V1PaymentIntents.Create(ctx, params)
 	if err != nil {
@@ -138,7 +130,11 @@ func (c *Client) CreateIntent(ctx context.Context, listingID, buyerID, stripeAcc
 // participate in. Flagged rather than silently skipped; a client that
 // confirms with insufficient funds today just gets a real ACH return days
 // later instead of an instant rejection.
-func (c *Client) CreateAchIntent(ctx context.Context, listingID, buyerID, stripeAccountID string, amountCents, applicationFeeCents int64, paymentMethodID, connectedCustomerID string) (pi *stripe.PaymentIntent, err error) {
+//
+// Created on the PLATFORM account, same reasoning as CreateIntent above —
+// no connected-account context, no cloning, the buyer's own saved bank
+// account is charged directly.
+func (c *Client) CreateAchIntent(ctx context.Context, listingID, buyerID string, amountCents int64, paymentMethodID, customerID string) (pi *stripe.PaymentIntent, err error) {
 	params := &stripe.PaymentIntentCreateParams{
 		Amount:             stripe.Int64(amountCents),
 		Currency:           stripe.String(string(stripe.CurrencyUSD)),
@@ -151,14 +147,8 @@ func (c *Client) CreateAchIntent(ctx context.Context, listingID, buyerID, stripe
 	if paymentMethodID != "" {
 		params.PaymentMethod = stripe.String(paymentMethodID)
 	}
-	if connectedCustomerID != "" {
-		params.Customer = stripe.String(connectedCustomerID)
-	}
-	if stripeAccountID != "" {
-		params.SetStripeAccount(stripeAccountID)
-		if applicationFeeCents > 0 {
-			params.ApplicationFeeAmount = stripe.Int64(applicationFeeCents)
-		}
+	if customerID != "" {
+		params.Customer = stripe.String(customerID)
 	}
 	pi, err = c.sc.V1PaymentIntents.Create(ctx, params)
 	if err != nil {
@@ -172,15 +162,10 @@ func (c *Client) CreateAchIntent(ctx context.Context, listingID, buyerID, stripe
 // and is genuinely authorized before trusting it for anything (never trust
 // client-supplied state for something that moves money; always re-check
 // server-side, the same principle as every other race-safe compare-and-
-// swap in this codebase, CLAUDE.md §5.3). stripeAccountID must be the same
-// connected account the intent was created on (direct-charge PaymentIntents
-// only exist on the connected account — retrieving without it 404s).
-func (c *Client) Retrieve(ctx context.Context, stripeAccountID, paymentIntentID string) (*stripe.PaymentIntent, error) {
-	params := &stripe.PaymentIntentRetrieveParams{}
-	if stripeAccountID != "" {
-		params.SetStripeAccount(stripeAccountID)
-	}
-	pi, err := c.sc.V1PaymentIntents.Retrieve(ctx, paymentIntentID, params)
+// swap in this codebase, CLAUDE.md §5.3). Always the platform account now —
+// separate-charges-and-transfers PaymentIntents only ever exist there.
+func (c *Client) Retrieve(ctx context.Context, paymentIntentID string) (*stripe.PaymentIntent, error) {
+	pi, err := c.sc.V1PaymentIntents.Retrieve(ctx, paymentIntentID, &stripe.PaymentIntentRetrieveParams{})
 	if err != nil {
 		return nil, fmt.Errorf("retrieve payment intent: %w", err)
 	}
@@ -190,62 +175,63 @@ func (c *Client) Retrieve(ctx context.Context, stripeAccountID, paymentIntentID 
 // Capture actually charges the authorized card — only ever called after
 // the atomic purchase (listing.BuyNowFixed / auction.BuyNow) has already
 // committed in our own database, i.e. this buyer has definitely won the
-// listing.
-func (c *Client) Capture(ctx context.Context, stripeAccountID, paymentIntentID string) error {
-	params := &stripe.PaymentIntentCaptureParams{}
-	if stripeAccountID != "" {
-		params.SetStripeAccount(stripeAccountID)
+// listing. Returns the captured PaymentIntent (with LatestCharge expanded)
+// so the caller can record the resulting charge id on the order —
+// internal/order.ReleaseFunds doesn't need it (a plain balance-drawing
+// Transfer is enough at this volume), but it's useful provenance to have on
+// the order row regardless.
+func (c *Client) Capture(ctx context.Context, paymentIntentID string) (*stripe.PaymentIntent, error) {
+	pi, err := c.sc.V1PaymentIntents.Capture(ctx, paymentIntentID, &stripe.PaymentIntentCaptureParams{
+		Expand: []*string{stripe.String("latest_charge")},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("capture payment intent: %w", err)
 	}
-	if _, err := c.sc.V1PaymentIntents.Capture(ctx, paymentIntentID, params); err != nil {
-		return fmt.Errorf("capture payment intent: %w", err)
-	}
-	return nil
+	return pi, nil
 }
 
 // Cancel releases an authorization hold without charging the card — used
 // when the atomic purchase lost the race (someone else already bought the
 // listing) or failed validation. A buyer who didn't win the item is never
 // charged for it.
-func (c *Client) Cancel(ctx context.Context, stripeAccountID, paymentIntentID string) error {
-	params := &stripe.PaymentIntentCancelParams{}
-	if stripeAccountID != "" {
-		params.SetStripeAccount(stripeAccountID)
-	}
-	if _, err := c.sc.V1PaymentIntents.Cancel(ctx, paymentIntentID, params); err != nil {
+func (c *Client) Cancel(ctx context.Context, paymentIntentID string) error {
+	if _, err := c.sc.V1PaymentIntents.Cancel(ctx, paymentIntentID, &stripe.PaymentIntentCancelParams{}); err != nil {
 		return fmt.Errorf("cancel payment intent: %w", err)
 	}
 	return nil
 }
 
-// Refund fully refunds a captured direct charge by its PaymentIntent id —
-// used by cmd/worker's ship-timeout and no-delivery-scan timers (design doc
-// v2 §5.2) to actually return the buyer's money, not just flip the order's
-// state and leave the charge standing. RefundApplicationFee is set so the
-// platform's cut comes back too — a cancelled/refunded order should never
-// leave the platform holding a fee for a sale that didn't happen.
-func (c *Client) Refund(ctx context.Context, stripeAccountID, paymentIntentID string) error {
-	params := &stripe.RefundCreateParams{
-		PaymentIntent:        stripe.String(paymentIntentID),
-		RefundApplicationFee: stripe.Bool(true),
-	}
-	if stripeAccountID != "" {
-		params.SetStripeAccount(stripeAccountID)
-	}
-	if _, err := c.sc.V1Refunds.Create(ctx, params); err != nil {
+// Refund fully refunds a captured platform-side charge by its PaymentIntent
+// id — used by cmd/worker's ship-timeout and no-delivery-scan timers
+// (design doc v2 §5.2) to actually return the buyer's money, not just flip
+// the order's state and leave the charge standing. No RefundApplicationFee
+// flag anymore (that was a direct-charge concept) — under separate charges
+// and transfers there's no separate application-fee object to reverse: the
+// whole charge lived on the platform's own balance, so a full refund simply
+// returns all of it, and since no Transfer to the seller has happened yet
+// at any point a full refund is legal (see internal/order's transition
+// table — refunded is only reachable from states before release), there's
+// nothing on the seller's side to claw back either.
+func (c *Client) Refund(ctx context.Context, paymentIntentID string) error {
+	if _, err := c.sc.V1Refunds.Create(ctx, &stripe.RefundCreateParams{
+		PaymentIntent: stripe.String(paymentIntentID),
+	}); err != nil {
 		return fmt.Errorf("refund payment intent: %w", err)
 	}
 	return nil
 }
 
 // CreatePayout triggers an actual payout of amountCents from a seller's
-// Stripe balance to their external bank account — the Payouts API call
-// design doc v2 §6 describes as the platform's only real lever over a
-// seller's money: "we are not operating escrow... payout timing on funds
-// that already belong to the seller." Every connected account has its
-// payout schedule set to manual at creation (internal/seller.
-// CreateExpressAccount), so nothing pays out automatically — only this.
-// method is "" (Stripe's own default, "standard") or "instant" — design
-// doc v2 §6.3's paid instant-payout upsell.
+// Stripe balance to their external bank account — the second and final
+// leg of the money's journey, only ever meaningful after CreateTransfer
+// below has actually moved that amount into the seller's connected-account
+// balance (a released order's funds sit in the PLATFORM's balance until
+// then, per this package's doc comment — they are never in the seller's
+// balance a moment earlier). Every connected account has its payout
+// schedule set to manual at creation (internal/seller.CreateExpressAccount),
+// so nothing pays out automatically — only this. method is "" (Stripe's own
+// default, "standard") or "instant" — design doc v2 §6.3's paid
+// instant-payout upsell.
 func (c *Client) CreatePayout(ctx context.Context, stripeAccountID string, amountCents int64, method string) (*stripe.Payout, error) {
 	params := &stripe.PayoutCreateParams{
 		Amount:   stripe.Int64(amountCents),
@@ -262,63 +248,47 @@ func (c *Client) CreatePayout(ctx context.Context, stripeAccountID string, amoun
 	return payout, nil
 }
 
-// RefundAmount partially refunds a captured direct charge — the "keep it,
-// take X% back" claims tool (design doc v2 §9.2). Unlike the full Refund
-// above, this deliberately does NOT set RefundApplicationFee: a partial
+// CreateTransfer moves amountCents from the platform's own Stripe balance
+// into a seller's connected account — the one and only point in this whole
+// flow where money actually leaves the platform's ledger toward a seller,
+// called exactly once per order by internal/order.ReleaseFunds, exactly
+// when that order reaches the released state (claim window elapsed, a
+// trusted-tier seller's instant release, or a claim resolving in the
+// seller's favor). This is what makes "separate charges and transfers" the
+// right charge type for the legal shape docs/Legal_MoneyTransitter.md
+// describes: unlike a destination charge (where the transfer happens
+// automatically the instant the charge captures), nothing moves toward the
+// seller until the platform explicitly decides the hold is over.
+func (c *Client) CreateTransfer(ctx context.Context, stripeAccountID string, amountCents int64) (*stripe.Transfer, error) {
+	tr, err := c.sc.V1Transfers.Create(ctx, &stripe.TransferCreateParams{
+		Amount:      stripe.Int64(amountCents),
+		Currency:    stripe.String(string(stripe.CurrencyUSD)),
+		Destination: stripe.String(stripeAccountID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create transfer: %w", err)
+	}
+	return tr, nil
+}
+
+// RefundAmount partially refunds a captured platform-side charge — the
+// "keep it, take X% back" claims tool (design doc v2 §9.2). Comes entirely
+// out of the seller's eventual take, never the platform's fee: a partial
 // refund is a negotiated value adjustment on a sale that still happened
 // (the seller shipped, the buyer kept the item), not a cancelled order, so
-// the platform's fee for actually running that transaction stands.
-func (c *Client) RefundAmount(ctx context.Context, stripeAccountID, paymentIntentID string, amountCents int64) error {
-	params := &stripe.RefundCreateParams{
+// the platform's fee for actually running that transaction stands. Callers
+// (internal/dispute.executePartialRefund) are responsible for recording the
+// refunded amount on the order (orders.refunded_cents) so
+// internal/order.ReleaseFunds transfers seller_net_cents minus whatever's
+// already gone back to the buyer, never the full pre-refund amount.
+func (c *Client) RefundAmount(ctx context.Context, paymentIntentID string, amountCents int64) error {
+	if _, err := c.sc.V1Refunds.Create(ctx, &stripe.RefundCreateParams{
 		PaymentIntent: stripe.String(paymentIntentID),
 		Amount:        stripe.Int64(amountCents),
-	}
-	if stripeAccountID != "" {
-		params.SetStripeAccount(stripeAccountID)
-	}
-	if _, err := c.sc.V1Refunds.Create(ctx, params); err != nil {
+	}); err != nil {
 		return fmt.Errorf("refund payment intent amount: %w", err)
 	}
 	return nil
-}
-
-// ClonePaymentMethodToConnectedAccount copies a buyer's platform-level
-// saved PaymentMethod — a card OR a bank account, the API call is
-// identical either way — onto a seller's connected account, just-in-time
-// at checkout. Required because a Stripe Customer/PaymentMethod lives on
-// the PLATFORM account — it cannot be charged directly on a connected
-// account at all, Stripe rejects it (design doc v2 §5.4). The clone is a
-// one-time, per-transaction copy; the buyer's platform-level saved
-// card/bank is what persists across purchases, not this clone.
-// platformCustomerID (the buyer's PLATFORM Customer id — the one
-// paymentmethod.DefaultCard/DefaultBank already looks up) MUST be passed
-// here: Stripe requires proof of which customer the source payment method
-// belongs to before it will clone one that's already attached to a
-// customer (every saved card/bank is), and errors ("...for security
-// purposes you must provide the customer in the request") if it's omitted
-// — this bit us for real, see TASKS-TODO.md. In return, Stripe
-// auto-creates a shadow Customer on the connected account and attaches the
-// clone to it (the returned PaymentMethod's Customer field) — callers MUST
-// pass that id (not platformCustomerID) into CreateIntent/CreateAchIntent's
-// connectedCustomerID param, or the PaymentIntent creation succeeds but the
-// resulting Payment Element fails to load client-side with the same
-// underlying error. Deliberately scoped to just "attach this specific
-// method to this specific intent" — a full "browse every saved method"
-// Payment Element carousel on a connected-account intent would need a
-// persistent (not per-transaction) shadow Customer per (buyer, seller)
-// pair, which is out of scope here; our own frontend UI is what lets a
-// buyer choose among several saved cards/banks instead (MockCheckout.tsx).
-func (c *Client) ClonePaymentMethodToConnectedAccount(ctx context.Context, sourcePaymentMethodID, platformCustomerID, stripeAccountID string) (*stripe.PaymentMethod, error) {
-	params := &stripe.PaymentMethodCreateParams{
-		PaymentMethod: stripe.String(sourcePaymentMethodID),
-		Customer:      stripe.String(platformCustomerID),
-	}
-	params.SetStripeAccount(stripeAccountID)
-	pm, err := c.sc.V1PaymentMethods.Create(ctx, params)
-	if err != nil {
-		return nil, fmt.Errorf("clone payment method to connected account: %w", err)
-	}
-	return pm, nil
 }
 
 // --- Saved cards ("Save a Card" in Account Settings) ---
@@ -446,6 +416,21 @@ func (c *Client) RetrievePaymentMethod(ctx context.Context, paymentMethodID stri
 // doc v2 §6.1 requires this — the platform controls *when* Payouts API
 // calls fire, batched weekly by default; it never controls custody).
 //
+// Only the "transfers" capability is requested — under separate charges and
+// transfers (this package's doc comment), a seller's connected account
+// never charges a buyer's card itself; it only ever RECEIVES a Transfer
+// from the platform's balance and pays that out to its own bank. That's
+// deliberate, not just simpler: requesting card_payments (the original
+// direct-charge design) makes Stripe's hosted onboarding collect a full
+// individual KYC packet — legal address, DOB, SSN, phone — AND a
+// business-style statement descriptor for every single seller, on the
+// theory that each one is independently charging cards as their own
+// merchant. A seller who's just paid out via Transfer never needs any of
+// that (docs/Legal_MoneyTransitter.md's whole point: the PLATFORM is
+// merchant of record, not them) — requesting transfers alone is both the
+// legally-correct shape and, not incidentally, the version of onboarding
+// that doesn't make someone selling one Charizard invent a business name.
+//
 // BusinessType is pre-set to "individual" — nearly every seller here is a
 // person selling their own cards, not a registered business, and without
 // this Stripe's hosted onboarding stops to ask "individual or business?"
@@ -455,9 +440,7 @@ func (c *Client) RetrievePaymentMethod(ctx context.Context, paymentMethodID stri
 // profile page, when they've claimed a username — empty otherwise) plus a
 // fixed ProductDescription are both set on BusinessProfile because Stripe
 // only prompts a seller to enter their own business website if it has
-// NEITHER a url nor a description of what's being sold — individual
-// sellers on a P2P card marketplace essentially never have one, and
-// shouldn't need to invent one just to get paid.
+// NEITHER a url nor a description of what's being sold.
 func (c *Client) CreateExpressAccount(ctx context.Context, email, profileURL string) (*stripe.Account, error) {
 	params := &stripe.AccountCreateParams{
 		Type:         stripe.String(string(stripe.AccountTypeExpress)),
@@ -465,18 +448,6 @@ func (c *Client) CreateExpressAccount(ctx context.Context, email, profileURL str
 		BusinessType: stripe.String("individual"),
 		BusinessProfile: &stripe.AccountCreateBusinessProfileParams{
 			ProductDescription: stripe.String("Trading card and collectibles sales on AuctionHous, a peer-to-peer marketplace"),
-			// MCC 5945 ("Hobby, Toy, and Game Shops") is the standard
-			// card-network category for trading card games and
-			// collectibles — setting it here for every seller platform-
-			// wide is what skips the interactive "Industry" question
-			// during onboarding entirely (Stripe only asks when it can't
-			// already tell). Without this, the card_payments capability
-			// request below (needed for charges to work at all) pulls in
-			// "What's your industry?" as a real, unavoidable-looking
-			// requirement for someone who's just trying to get paid for
-			// selling a card — same class of friction as the "website"
-			// question §6.13 already fixed via ProductDescription/URL.
-			MCC: stripe.String("5945"),
 		},
 		Settings: &stripe.AccountCreateSettingsParams{
 			Payouts: &stripe.AccountCreateSettingsPayoutsParams{
@@ -484,36 +455,9 @@ func (c *Client) CreateExpressAccount(ctx context.Context, email, profileURL str
 					Interval: stripe.String("manual"),
 				},
 			},
-			// Same reasoning as MCC above: without a platform-wide
-			// default, card_payments requires each individual seller to
-			// invent their own statement descriptor (what shows on a
-			// buyer's card statement) — a "make up a business name"
-			// question that has no business being asked of someone
-			// selling one Charizard. One shared descriptor across every
-			// seller (must be 5-22 chars, letters/spaces only, no
-			// <>'"*) is exactly how ordinary marketplaces (eBay, Etsy,
-			// StockX) handle this — the buyer sees "AUCTIONHOUS TCG" on
-			// their statement regardless of which individual sold them
-			// the card, the same way they'd see "ETSY.COM" regardless of
-			// which Etsy shop they bought from.
-			Payments: &stripe.AccountCreateSettingsPaymentsParams{
-				StatementDescriptor: stripe.String("AUCTIONHOUS TCG"),
-			},
 		},
-		// Without explicitly requesting these, Stripe only granted this
-		// account "transfers" (needed for payouts) and left card_payments
-		// off entirely — direct charges (design doc v2 §5.3) then fail at
-		// confirm time with "You cannot create a charge on a connected
-		// account without the `card_payments` capability enabled," a real
-		// bug caught live: every listing created against an account from
-		// before this fix can take bids/authorize a checkout-intent fine
-		// (that part never touches capabilities) but can't actually be
-		// paid for. us_bank_account_ach_payments is the ACH-rail
-		// equivalent (design doc v2 §4) — same reasoning, same fix.
 		Capabilities: &stripe.AccountCreateCapabilitiesParams{
-			CardPayments:             &stripe.AccountCreateCapabilitiesCardPaymentsParams{Requested: stripe.Bool(true)},
-			Transfers:                &stripe.AccountCreateCapabilitiesTransfersParams{Requested: stripe.Bool(true)},
-			USBankAccountACHPayments: &stripe.AccountCreateCapabilitiesUSBankAccountACHPaymentsParams{Requested: stripe.Bool(true)},
+			Transfers: &stripe.AccountCreateCapabilitiesTransfersParams{Requested: stripe.Bool(true)},
 		},
 	}
 	if profileURL != "" {

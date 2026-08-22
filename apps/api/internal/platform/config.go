@@ -80,6 +80,27 @@ type Config struct {
 	// graceful-degradation pattern as every other optional integration
 	// here.
 	SupabaseServiceRoleKey string
+	// EasyPostAPIKey powers real shipping-label purchase
+	// (internal/shipping.Client, docs/Shipping_Research.md) — a test-mode
+	// key from EasyPost's dashboard works for local dev without touching
+	// real postage cost. Empty skips registering
+	// POST /listings/{id}/order/shipping-label, same graceful-degradation
+	// pattern as every other optional integration here.
+	EasyPostAPIKey string
+	// ResendAPIKey powers internal/mail — the one real email this repo
+	// sends: alerting support when a claim reaches human_review
+	// (internal/dispute.Escalate). Empty means that alert is silently
+	// skipped (logged, not fatal), same graceful-degradation pattern as
+	// every other optional integration here.
+	ResendAPIKey string
+	// ClaimsNotifyFrom/ClaimsNotifyTo are the fixed sender/recipient for
+	// that one email. From must be on a domain verified with Resend (see
+	// apps/api/.env.example) — it does NOT need its own real mailbox, it's
+	// just the From header; To is the real, human-read support mailbox.
+	// Defaults point at the real addresses; override ClaimsNotifyTo in
+	// local dev so testing this doesn't actually page support@.
+	ClaimsNotifyFrom string
+	ClaimsNotifyTo   string
 }
 
 // LoadConfig reads configuration from the environment, applying sane local
@@ -100,6 +121,10 @@ func LoadConfig() (Config, error) {
 		CardCatalogProjectID:       getEnv("CARD_CATALOG_PROJECT_ID", ""),
 		CardCatalogCredentialsFile: getEnv("CARD_CATALOG_CREDENTIALS_FILE", ""),
 		SupabaseServiceRoleKey:     getEnv("SUPABASE_SERVICE_ROLE_KEY", ""),
+		EasyPostAPIKey:             getEnv("EASYPOST_API_KEY", ""),
+		ResendAPIKey:               getEnv("RESEND_API_KEY", ""),
+		ClaimsNotifyFrom:           getEnv("CLAIMS_NOTIFY_FROM_EMAIL", "AuctionHous Claims <claims@auctionhous.net>"),
+		ClaimsNotifyTo:             getEnv("CLAIMS_NOTIFY_TO_EMAIL", "support@auctionhous.net"),
 	}
 	if cfg.Port == "" {
 		return Config{}, fmt.Errorf("PORT must not be empty")

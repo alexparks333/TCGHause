@@ -13,7 +13,7 @@ const TIME_LEFT_MAX_HOURS = 168; // 7 days — the longest real auction length (
 
 // The left-hand filter panel — reflects the game bubble (CategoryNav) and
 // the search box (Header) as removable chips, and is itself a real
-// <form action="/" method="GET"> for everything else (finished, Buy It Now,
+// <form action="/" method="GET"> for everything else (sold, Buy It Now,
 // price, condition, time left) — CLAUDE.md §6.14/§6.15. Collapses
 // left-to-right into a slim icon rail rather than a vertical accordion —
 // that needs real client state (a width transition, not just show/hide),
@@ -24,7 +24,7 @@ export default function FilterSidebar({ searchParams }: { searchParams: SearchPa
 
   const activeGame = paramStr(searchParams, "game");
   const activeQuery = paramStr(searchParams, "q");
-  const finished = paramBool(searchParams, "finished");
+  const sold = paramBool(searchParams, "sold");
   const fixedOnly = paramBool(searchParams, "fixedOnly");
   const conditionMin = paramStr(searchParams, "conditionMin");
   const priceMin = paramNum(searchParams, "priceMin") ?? PRICE_MIN_CENTS;
@@ -35,7 +35,7 @@ export default function FilterSidebar({ searchParams }: { searchParams: SearchPa
   const hasAnyFilter =
     Boolean(activeGame) ||
     Boolean(activeQuery) ||
-    finished ||
+    sold ||
     fixedOnly ||
     Boolean(conditionMin) ||
     priceMin !== PRICE_MIN_CENTS ||
@@ -116,12 +116,12 @@ export default function FilterSidebar({ searchParams }: { searchParams: SearchPa
           <label className="flex items-center gap-2 text-sm text-gray-700">
             <input
               type="checkbox"
-              name="finished"
+              name="sold"
               value="true"
-              defaultChecked={finished}
+              defaultChecked={sold}
               className="h-4 w-4 rounded border-gray-300 accent-brand-navy"
             />
-            Finished
+            Sold
           </label>
 
           <label className="flex items-center gap-2 text-sm text-gray-700">

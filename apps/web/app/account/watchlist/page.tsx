@@ -1,7 +1,7 @@
 import { getMyWatchedIds, getListing } from "@/lib/api";
 import { getLocalSession } from "@/lib/session";
 import ListingCard from "@/components/ListingCard";
-import type { Listing } from "@/lib/types";
+import { hasListingEnded, type Listing } from "@/lib/types";
 
 export default async function WatchlistPage() {
   // Local cookie read, not a verified getCurrentSession()/getUser() call —
@@ -13,9 +13,13 @@ export default async function WatchlistPage() {
     ? await getMyWatchedIds(local.accessToken).catch(() => new Set<string>())
     : new Set<string>();
 
+  // Watching something that later sells or ends doesn't keep it here — the
+  // only place to still find it is a Sold-filtered search, same as
+  // anywhere else on the site (never Recently Viewed/Live Auctions/an
+  // unfiltered browse either).
   const listings = (
     await Promise.all(Array.from(watchedIds).map((id) => getListing(id)))
-  ).filter((l): l is Listing => l !== null);
+  ).filter((l): l is Listing => l !== null && !hasListingEnded(l));
 
   return (
     <div className="px-10 py-8 sm:px-12 lg:px-14">

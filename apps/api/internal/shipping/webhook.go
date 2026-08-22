@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"auctionhous-tcg/api/internal/order"
+	"auctionhous-tcg/api/internal/payment"
 )
 
 // deliveryEvent is intentionally carrier-agnostic — this is NOT Shippo's or
@@ -36,7 +37,7 @@ type deliveryEvent struct {
 // (order.MarkDelivered). Any other event type is accepted (200) and
 // ignored — same "don't fail on an event we don't act on" posture as
 // internal/webhook's Stripe dispatch.
-func HandleDeliveryWebhook(pool *pgxpool.Pool, webhookSecret string) http.HandlerFunc {
+func HandleDeliveryWebhook(pool *pgxpool.Pool, paymentClient *payment.Client, webhookSecret string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := readAndVerify(r, webhookSecret)
 		if err != nil {
@@ -77,7 +78,7 @@ func HandleDeliveryWebhook(pool *pgxpool.Pool, webhookSecret string) http.Handle
 			return
 		}
 
-		if err := order.MarkDelivered(r.Context(), pool, o.ID); err != nil {
+		if err := order.MarkDelivered(r.Context(), pool, paymentClient, o.ID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

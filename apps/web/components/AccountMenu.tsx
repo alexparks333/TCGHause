@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 const ACTIVITY_LINKS = [
   { href: "/account/watchlist", label: "Watchlist" },
   { href: "/account/selling", label: "Selling" },
+  { href: "/account/transactions", label: "Transactions" },
   { href: "/account/withdraw", label: "Withdraw" },
   { href: "/account/bids-offers", label: "Bids/Offers" },
   { href: "/account/sold-history", label: "Sold History" },

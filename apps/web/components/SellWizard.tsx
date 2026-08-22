@@ -41,6 +41,13 @@ export interface WizardData {
   buyItNowPrice: string;
   freeShipping: boolean;
   shippingCost: string;
+  // ShippingTier is the seller's chosen preset (see Step3Price's picker) —
+  // a floor, not a guarantee: the backend re-derives the required tier from
+  // the actual final sale price at order time and ships at whichever is
+  // stricter (docs/Shipping_Research.md's synthesis, internal/shipping.Max)
+  // — a low-starting-bid auction that closes above $500 always ships
+  // signature-tier regardless of what's picked here.
+  shippingTier: "standard" | "tracked" | "signature";
 }
 
 export type UpdateField = <K extends keyof WizardData>(key: K, value: WizardData[K]) => void;
@@ -65,6 +72,7 @@ const INITIAL: WizardData = {
   buyItNowPrice: "",
   freeShipping: true,
   shippingCost: "",
+  shippingTier: "standard",
 };
 
 function dollarsToCents(value: string): number {
@@ -118,6 +126,7 @@ export default function SellWizard() {
               : 0,
           freeShipping: data.freeShipping,
           shippingCostCents: data.freeShipping ? 0 : dollarsToCents(data.shippingCost),
+          shippingTier: data.shippingTier,
           imageUrls: data.photos,
         }),
       });

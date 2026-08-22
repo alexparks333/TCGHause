@@ -26,15 +26,6 @@ var ErrSellerNotOnboarded = errors.New("this seller hasn't finished setting up p
 type checkoutIntentResponse struct {
 	ClientSecret    string `json:"clientSecret"`
 	PaymentIntentID string `json:"paymentIntentId"`
-	// StripeAccountID is the seller's connected account id — a direct
-	// charge's PaymentIntent (design doc v2 §5.3) lives entirely on that
-	// account, not the platform account, so Stripe.js on the frontend must
-	// be initialized with {stripeAccount: this} before it can load or
-	// confirm ClientSecret at all. Omitting this was a real bug: Stripe.js
-	// silently fails to load the Payment Element ("loaderror") when the
-	// clientSecret it's given belongs to a different account context than
-	// the one it was initialized with — see TASKS-TODO.md.
-	StripeAccountID string `json:"stripeAccountId"`
 	Rail            string `json:"rail"`
 	// AmountCents is what this specific intent actually charges — matches
 	// CardAmountCents or BankAmountCents below depending on Rail.
@@ -156,7 +147,7 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			return
 		}
 
-		stripeAccountID, err := seller.RequireChargesEnabled(r.Context(), pool, lst.SellerID)
+		stripeAccountID, err := seller.RequirePayoutsEnabled(r.Context(), pool, lst.SellerID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -178,7 +169,6 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 		}
 
 		resp := checkoutIntentResponse{
-			StripeAccountID:     stripeAccountID,
 			Rail:                string(rail),
 			CardAmountCents:     int64(quote.CardTotal),
 			BankAmountCents:     int64(quote.BankTotal),
@@ -188,17 +178,14 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 		}
 
 		if rail == order.RailAch {
-			applicationFeeCents := int64(quote.SellerFee) + int64(quote.BankTax)
-
 			// Auto-attach a saved bank account if there is one — either
 			// whichever one the buyer explicitly picked in MockCheckout.tsx's
-			// picker (chosenPaymentMethodID), or their default — cloned onto
-			// the seller's connected account just-in-time, same reasoning as
-			// the card branch below. Never fatal: if cloning fails, checkout
-			// simply proceeds without a pre-attached bank rather than
-			// blocking the buyer — they can still link one by hand through
-			// the Payment Element's Financial Connections flow.
-			var paymentMethodID, connectedCustomerID string
+			// picker (chosenPaymentMethodID), or their default. Charged
+			// directly on the platform account (this package's own doc
+			// comment) — no cloning onto a connected account needed, the
+			// buyer's platform-level Customer/PaymentMethod is exactly what
+			// this PaymentIntent is created against.
+			var paymentMethodID string
 			var savedBank *paymentmethod.SavedBank
 			platformCustomerID, bank, hasSaved, err := resolveBank(r.Context(), pool, paymentClient, buyerID, chosenPaymentMethodID)
 			if err != nil {
@@ -206,17 +193,11 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 				return
 			}
 			if hasSaved {
-				clonedPM, cloneErr := paymentClient.ClonePaymentMethodToConnectedAccount(r.Context(), bank.ID, platformCustomerID, stripeAccountID)
-				if cloneErr == nil {
-					paymentMethodID = clonedPM.ID
-					if clonedPM.Customer != nil {
-						connectedCustomerID = clonedPM.Customer.ID
-					}
-					savedBank = bank
-				}
+				paymentMethodID = bank.ID
+				savedBank = bank
 			}
 
-			pi, err := paymentClient.CreateAchIntent(r.Context(), listingID, buyerID, stripeAccountID, int64(quote.BankTotal), applicationFeeCents, paymentMethodID, connectedCustomerID)
+			pi, err := paymentClient.CreateAchIntent(r.Context(), listingID, buyerID, int64(quote.BankTotal), paymentMethodID, platformCustomerID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -231,42 +212,25 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			return
 		}
 
-		applicationFeeCents := int64(quote.SellerFee) + int64(quote.CardTax)
-
 		// Auto-attach a saved card if there is one — either whichever one
 		// the buyer explicitly picked in MockCheckout.tsx's picker
-		// (chosenPaymentMethodID), or their default — by cloning it onto
-		// the seller's connected account just-in-time (design doc v2 §5.4
-		// — a platform-level Customer's PaymentMethod can't be charged
-		// directly on a connected account). Never fatal: if cloning fails
-		// for any reason, checkout simply proceeds without a pre-attached
-		// card rather than blocking the buyer entirely — they can still
-		// enter a card by hand.
+		// (chosenPaymentMethodID), or their default. Charged directly on
+		// the platform account (this package's own doc comment) — the
+		// buyer's platform-level Customer/PaymentMethod is exactly what
+		// this PaymentIntent is created against, no cloning required.
 		var paymentMethodID string
-		var connectedCustomerID string
 		var savedCard *paymentmethod.SavedCard
-		// The platform-level customer id isn't usable directly on the
-		// connected account (§5.4) for charging, but Stripe still requires
-		// it as proof of ownership when cloning an already-attached
-		// PaymentMethod onto the connected account below — see
-		// ClonePaymentMethodToConnectedAccount's doc comment.
 		platformCustomerID, card, hasSaved, err := resolveCard(r.Context(), pool, paymentClient, buyerID, chosenPaymentMethodID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if hasSaved {
-			clonedPM, cloneErr := paymentClient.ClonePaymentMethodToConnectedAccount(r.Context(), card.ID, platformCustomerID, stripeAccountID)
-			if cloneErr == nil {
-				paymentMethodID = clonedPM.ID
-				if clonedPM.Customer != nil {
-					connectedCustomerID = clonedPM.Customer.ID
-				}
-				savedCard = card
-			}
+			paymentMethodID = card.ID
+			savedCard = card
 		}
 
-		pi, err := paymentClient.CreateIntent(r.Context(), listingID, buyerID, stripeAccountID, int64(quote.CardTotal), applicationFeeCents, paymentMethodID, connectedCustomerID)
+		pi, err := paymentClient.CreateIntent(r.Context(), listingID, buyerID, int64(quote.CardTotal), paymentMethodID, platformCustomerID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

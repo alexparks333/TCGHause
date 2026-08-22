@@ -118,7 +118,7 @@ export default function CheckoutScreen() {
   }
 
   return (
-    <StripeProvider publishableKey={STRIPE_PUBLISHABLE_KEY} stripeAccountId={intent.stripeAccountId}>
+    <StripeProvider publishableKey={STRIPE_PUBLISHABLE_KEY}>
       <PaymentPanel
         listing={listing}
         intent={intent}

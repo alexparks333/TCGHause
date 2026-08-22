@@ -24,6 +24,12 @@ export interface Listing {
   id: string;
   sellerId: string;
   sellerUsername: string | null;
+  // Real aggregates over the seller's reviews (0/0 when they have none
+  // yet) — never a placeholder rating. Design doc v2 §3's trust tier.
+  // Mirrors apps/web/lib/types.ts's Listing exactly.
+  sellerRatingAvg: number;
+  sellerReviewCount: number;
+  sellerTier: SellerTier;
   title: string;
   game: Game;
   set: string;
@@ -98,10 +104,165 @@ export function purchaseDate(listing: Listing): string | undefined {
   return listing.format === 'fixed' ? listing.soldAt : listing.closedAt;
 }
 
+// A listing that's no longer an active, purchasable offer — an auction
+// that's ended (whether it sold or not) or a fixed-price listing that
+// already sold. Mirrors apps/web/lib/types.ts's hasListingEnded exactly.
+// GET /listings and its filters (apps/api/internal/listing's ListActive)
+// already exclude these by default; this is for the couple of screens that
+// fetch a listing directly by id instead (Recently Viewed, Watchlist) and
+// so bypass that server-side filter entirely — Recently Viewed/Watchlist/
+// Live Auctions/an unfiltered browse must never surface an ended or sold
+// listing, only the Sold filter should.
+export function hasListingEnded(listing: Listing): boolean {
+  if (listing.format === 'fixed') return Boolean(listing.buyerId);
+  return Boolean(listing.outcome) || (listing.endsAt ? new Date(listing.endsAt).getTime() <= Date.now() : false);
+}
+
+// The exact moment a listing actually sold, or undefined if it never did —
+// including an auction that simply timed out with no bids: closedAt is set
+// for that case too (close.go stamps it regardless of outcome), but it must
+// never be shown as a "sold" date since there was no sale. Mirrors
+// apps/web/lib/types.ts's listingSoldAt exactly.
+export function listingSoldAt(listing: Listing): string | undefined {
+  if (listing.format === 'fixed') return listing.buyerId ? listing.soldAt : undefined;
+  return listing.outcome === 'sold' || listing.outcome === 'bought_now' ? listing.closedAt : undefined;
+}
+
 export interface MyBid {
   listing: Listing;
   myMaxBidCents: number;
   status: 'winning' | 'outbid';
+}
+
+// Mirrors apps/api/internal/order.State / apps/web/lib/api.ts's OrderState
+// exactly (design doc v2 §5.1).
+export type OrderState =
+  | 'created'
+  | 'payment_pending'
+  | 'paid'
+  | 'awaiting_ship'
+  | 'shipped'
+  | 'delivered'
+  | 'claim_window'
+  | 'released'
+  | 'claim_open'
+  | 'refunded'
+  | 'cancelled';
+
+// Mirrors apps/api/internal/order.Order / apps/web/lib/api.ts's Order
+// exactly. Only exists for a purchase made through the real Connect
+// checkout path — a mock purchase has no order at all.
+export interface Order {
+  id: string;
+  listingId: string;
+  buyerId: string;
+  sellerId: string;
+  state: OrderState;
+  rail?: 'card' | 'ach';
+  tierAtSale: string;
+  subtotalCents: number;
+  shippingCents: number;
+  sellerFeeCents: number;
+  sellerNetCents: number;
+  taxCents: number;
+  chargedCents: number;
+  trackingNumber?: string;
+  carrier?: string;
+  shippedAt?: string;
+  deliveredAt?: string;
+  claimDeadline?: string;
+  releasedAt?: string;
+  createdAt: string;
+}
+
+// Mirrors apps/api/internal/order.Summary / apps/web/lib/api.ts's
+// OrderSummary exactly — the Transactions tab's one row shape.
+export interface OrderSummary extends Order {
+  listingTitle: string;
+  listingImageUrl?: string;
+  counterpartyId: string;
+  counterpartyUsername?: string;
+  viewerIsSeller: boolean;
+}
+
+// Mirrors apps/api/internal/order.EvidenceType / apps/web/lib/api.ts's
+// EvidenceType exactly.
+export type EvidenceType = 'card_front' | 'card_back' | 'package_sealed' | 'arrival_photo' | 'claim_photo';
+
+// The happy-path order lifecycle (design doc v2 §5) — shared between the
+// full order-status timeline and the compact per-row bubbles on the
+// Transactions list, same source-of-truth split as
+// apps/web/lib/orderSteps.ts.
+export const ORDER_STEPS: { state: OrderState; label: string }[] = [
+  { state: 'paid', label: 'Paid' },
+  { state: 'awaiting_ship', label: 'Awaiting shipment' },
+  { state: 'shipped', label: 'Shipped' },
+  { state: 'delivered', label: 'Delivered' },
+  { state: 'claim_window', label: 'Claim window' },
+  { state: 'released', label: 'Released to seller' },
+];
+
+// A terminal state (refunded/cancelled) or claim_open falls outside the
+// happy-path steps above — rendered as its own line rather than forced
+// onto the linear timeline.
+export const ORDER_OFF_PATH_LABELS: Partial<Record<OrderState, string>> = {
+  cancelled: 'Cancelled — refunded in full',
+  refunded: 'Refunded',
+  claim_open: 'Claim open — under review',
+};
+
+// Mirrors apps/api/internal/dispute / apps/web/lib/api.ts's claim types
+// exactly (design doc v2 §9).
+export type ClaimState =
+  | 'opened'
+  | 'negotiating'
+  | 'escalated'
+  | 'auto_adjudicated'
+  | 'human_review'
+  | 'decided'
+  | 'appealed'
+  | 'closed';
+
+export type ClaimReasonCode =
+  | 'not_as_described'
+  | 'not_received_no_tracking'
+  | 'not_received_tracking_delivered'
+  | 'payment_fraud'
+  | 'buyers_remorse'
+  | 'transit_damage';
+
+export type ClaimResolution = 'refund_buyer' | 'deny' | 'partial_refund' | 'platform_absorb';
+export type ClaimLiableParty = 'seller' | 'buyer' | 'platform';
+
+export interface Claim {
+  id: string;
+  orderId: string;
+  openedBy: string;
+  reasonCode: ClaimReasonCode;
+  state: ClaimState;
+  resolution?: ClaimResolution;
+  refundCents?: number;
+  liableParty?: ClaimLiableParty;
+  reviewerId?: string;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export type ClaimEventKind = 'message' | 'evidence' | 'partial_refund_offer' | 'escalation' | 'decision' | 'appeal';
+
+export interface ClaimEvent {
+  id: string;
+  claimId: string;
+  actorId: string;
+  kind: ClaimEventKind;
+  body?: string;
+  amountCents?: number;
+  createdAt: string;
+}
+
+export interface ClaimDetail {
+  claim: Claim;
+  events: ClaimEvent[];
 }
 
 // Mirrors apps/api/internal/seller.Tier exactly (same as apps/web/lib/api.ts's SellerTier).
@@ -191,4 +352,19 @@ export function formatRelativeTime(iso: string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+// The exact moment something happened — "Aug 15, 2026, 6:39 PM" — distinct
+// from formatRelativeTime's rough shorthand. Mirrors apps/web/lib/format.ts's
+// formatDateTime exactly. Used where the precise timestamp itself is the
+// point (a Sold-filtered listing's sale time), not just a sense of how long
+// ago it was.
+export function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }

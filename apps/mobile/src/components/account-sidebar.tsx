@@ -32,10 +32,12 @@ type SidebarRoute =
   | '/buy-history'
   | '/watchlist'
   | '/selling'
+  | '/transactions'
   | '/messages';
 const ACTIVITY_LINKS: { label: string; route: SidebarRoute | null }[] = [
   { label: 'Watchlist', route: '/watchlist' },
   { label: 'Selling', route: '/selling' },
+  { label: 'Transactions', route: '/transactions' },
   { label: 'Withdraw', route: '/withdraw' },
   { label: 'Bids/Offers', route: '/bids' },
   { label: 'Sold History', route: '/sold-history' },

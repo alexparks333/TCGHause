@@ -170,10 +170,9 @@ async function confirmAndBuy(
   listingId: string,
   rail: "card" | "ach",
   clientSecret: string,
-  stripeAccountId: string,
   cb: PurchaseCallbacks,
 ) {
-  const stripe = await getStripe(stripeAccountId);
+  const stripe = await getStripe();
   if (!stripe) {
     cb.onError("Stripe failed to load.");
     return;
@@ -313,7 +312,7 @@ function StripeCheckout({ listingId }: { listingId: string }) {
     setChargeError("");
     try {
       const newIntent = await createCheckoutIntent(listingId, rail, paymentMethodId);
-      await confirmAndBuy(listingId, rail, newIntent.clientSecret, newIntent.stripeAccountId, {
+      await confirmAndBuy(listingId, rail, newIntent.clientSecret, {
         onAlreadyPurchased: () => setAlreadyPurchased(true),
         onError: (m) => {
           setChargeError(m);
@@ -518,7 +517,7 @@ function SavedMethodPayButton({ listingId, intent }: { listingId: string; intent
   async function handlePay() {
     setProcessing(true);
     setError("");
-    await confirmAndBuy(listingId, intent.rail, intent.clientSecret, intent.stripeAccountId, {
+    await confirmAndBuy(listingId, intent.rail, intent.clientSecret, {
       onAlreadyPurchased: () => setAlreadyPurchased(true),
       onError: (m) => {
         setError(m);
@@ -636,7 +635,7 @@ function NewCardForm({
       ) : (
         <Elements
           key="charge"
-          stripe={getStripe(baseIntent.stripeAccountId)}
+          stripe={getStripe()}
           options={{ clientSecret: baseIntent.clientSecret, appearance: { theme: "stripe" } }}
         >
           <StripePaymentForm listingId={listingId} intent={baseIntent} />
