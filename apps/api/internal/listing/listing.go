@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/address"
 	"auctionhous-tcg/api/internal/catalog"
 	"auctionhous-tcg/api/internal/notification"
 	"auctionhous-tcg/api/internal/seller"
@@ -112,33 +113,42 @@ type Listing struct {
 	// — always real, 'new' being the honest default rather than a
 	// placeholder, same "derive, never fabricate" rule as the rating
 	// aggregates above.
-	SellerTier        string  `json:"sellerTier"`
-	Title             string  `json:"title"`
-	Game              string  `json:"game"`
-	SetName           string  `json:"set"`
-	CardNumber        *string `json:"cardNumber,omitempty"`
-	Rarity            *string `json:"rarity,omitempty"`
-	Condition         string  `json:"condition"`
-	IsGraded          bool    `json:"isGraded"`
-	GradingCompany    *string `json:"gradingCompany,omitempty"`
-	Grade             *string `json:"grade,omitempty"`
-	CertNumber        *string `json:"certNumber,omitempty"`
-	Format            Format  `json:"format"`
-	PriceCents        *int64  `json:"priceCents,omitempty"`
-	FreeShipping      bool    `json:"freeShipping"`
-	ShippingCostCents int64   `json:"shippingCostCents"`
-	// ShippingTier is the seller's chosen preset at listing time
-	// (internal/shipping.Tier's three values) — "the floor," not
+	SellerTier     string  `json:"sellerTier"`
+	Title          string  `json:"title"`
+	Game           string  `json:"game"`
+	SetName        string  `json:"set"`
+	CardNumber     *string `json:"cardNumber,omitempty"`
+	Rarity         *string `json:"rarity,omitempty"`
+	Condition      string  `json:"condition"`
+	IsGraded       bool    `json:"isGraded"`
+	GradingCompany *string `json:"gradingCompany,omitempty"`
+	Grade          *string `json:"grade,omitempty"`
+	CertNumber     *string `json:"certNumber,omitempty"`
+	Format         Format  `json:"format"`
+	PriceCents     *int64  `json:"priceCents,omitempty"`
+	// ShippingPreset is the seller's chosen shipping method at listing
+	// time (internal/shipping.Preset's five values) — "the floor," not
 	// necessarily what the item ships at: a low-starting-bid auction that
-	// closes above $500 still ships signature-tier regardless of what's
-	// recorded here, since order.CreateFromWin combines this with
-	// shipping.RequiredTier(finalPrice) and keeps whichever is stricter.
-	// See internal/shipping's package doc for the full policy.
-	ShippingTier string    `json:"shippingTier"`
-	ImageUrls    []string  `json:"imageUrls"`
-	WatcherCount int       `json:"watcherCount"`
-	Status       string    `json:"status"`
-	CreatedAt    time.Time `json:"createdAt"`
+	// closes above $500 still ships signature-required regardless of
+	// what's recorded here, since order.CreateFromWin resolves this
+	// through shipping.UpgradePreset(finalPrice) and keeps whichever
+	// mechanism that mandates. See internal/shipping's package doc for
+	// the full policy. There's no separate FreeShipping/ShippingCostCents
+	// pair anymore — free-ness is Preset.IsFree(), and the buyer-facing
+	// cost is derived from the preset itself, never an arbitrary
+	// seller-typed number.
+	ShippingPreset string `json:"shippingPreset"`
+	// EstimatedShippingCents is only ever populated for the
+	// shippo_ground_advantage preset — a one-time rate-shop estimate
+	// computed at creation time (see Create), shown on the listing so
+	// buyers have a real number before the actual checkout-time quote.
+	// Nil for every other preset (their cost is either $0 or the fixed
+	// TrackedEnvelopeCents, no estimate needed).
+	EstimatedShippingCents *int64    `json:"estimatedShippingCents,omitempty"`
+	ImageUrls              []string  `json:"imageUrls"`
+	WatcherCount           int       `json:"watcherCount"`
+	Status                 string    `json:"status"`
+	CreatedAt              time.Time `json:"createdAt"`
 
 	StartingBidCents  *int64     `json:"startingBidCents,omitempty"`
 	CurrentPriceCents *int64     `json:"currentPriceCents,omitempty"`
@@ -213,13 +223,13 @@ type CreateInput struct {
 	// alone is Format=fixed (its own PriceCents is the Buy It Now price);
 	// "both" is Format=auction with this set to a real price.
 	BuyItNowPriceCents int64 `json:"buyItNowPriceCents"`
-	FreeShipping       bool  `json:"freeShipping"`
-	ShippingCostCents  int64 `json:"shippingCostCents"`
-	// ShippingTier is one of shipping.TierStandard/TierTracked/
-	// TierSignature — defaults to TierStandard when empty (the common
-	// bubble-mailer case), validated in Create against Tier.Valid().
-	ShippingTier string   `json:"shippingTier"`
-	ImageUrls    []string `json:"imageUrls"`
+	// ShippingPreset is one of shipping.Preset's five values — defaults to
+	// PresetTrackedEnvelope when empty (matching the column's own db
+	// default), validated in Create against Preset.Valid() plus the
+	// free-preset/auction-format and free-preset/$100 restrictions
+	// documented on shipping.UpgradePreset's own doc comment.
+	ShippingPreset string   `json:"shippingPreset"`
+	ImageUrls      []string `json:"imageUrls"`
 }
 
 const selectColumns = `
@@ -232,7 +242,7 @@ const selectColumns = `
 	u.tier,
 	l.title, l.game, l.set_name, l.card_number, l.rarity, l.condition,
 	l.is_graded, l.grading_company, l.grade, l.cert_number, l.format, l.price_cents,
-	l.free_shipping, l.shipping_cost_cents, l.shipping_tier, l.image_urls,
+	l.shipping_preset, l.estimated_shipping_cents, l.image_urls,
 	(select count(*) from watchlist w where w.listing_id = l.id) as watcher_count,
 	l.status, l.created_at, l.buyer_id, l.sold_at,
 	a.starting_bid_cents, a.current_price_cents, a.high_bidder_id, a.bid_count, a.ends_at, a.outcome,
@@ -256,7 +266,7 @@ func scanListing(row rowScanner) (Listing, error) {
 		&lst.ID, &lst.SellerID, &lst.SellerUsername, &lst.SellerRatingAvg, &lst.SellerReviewCount, &lst.SellerTier,
 		&lst.Title, &lst.Game, &lst.SetName, &lst.CardNumber, &lst.Rarity, &lst.Condition,
 		&lst.IsGraded, &lst.GradingCompany, &lst.Grade, &lst.CertNumber, &format, &lst.PriceCents,
-		&lst.FreeShipping, &lst.ShippingCostCents, &lst.ShippingTier, &lst.ImageUrls, &lst.WatcherCount, &lst.Status, &lst.CreatedAt, &lst.BuyerID, &lst.SoldAt,
+		&lst.ShippingPreset, &lst.EstimatedShippingCents, &lst.ImageUrls, &lst.WatcherCount, &lst.Status, &lst.CreatedAt, &lst.BuyerID, &lst.SoldAt,
 		&lst.StartingBidCents, &lst.CurrentPriceCents, &lst.HighBidderID, &lst.BidCount, &lst.EndsAt, &lst.Outcome,
 		&lst.BuyItNowPriceCents, &lst.ClosedAt, &lst.PaidAt, &lst.BuyerUsername,
 	)
@@ -267,7 +277,7 @@ func scanListing(row rowScanner) (Listing, error) {
 	return lst, nil
 }
 
-func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateInput) (*Listing, error) {
+func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateInput, shippoClient *shipping.Client) (*Listing, error) {
 	if err := user.RequireUsername(ctx, pool, sellerID); err != nil {
 		if errors.Is(err, user.ErrNoUsername) {
 			return nil, ErrSellerHasNoUsername
@@ -309,12 +319,29 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 	if len(in.ImageUrls) == 0 && !AllowMissingPhotos {
 		return nil, fmt.Errorf("%w: at least one photo is required", ErrInvalidInput)
 	}
-	shippingTier := in.ShippingTier
-	if shippingTier == "" {
-		shippingTier = string(shipping.TierStandard)
+	shippingPreset := in.ShippingPreset
+	if shippingPreset == "" {
+		shippingPreset = string(shipping.PresetTrackedEnvelope)
 	}
-	if !shipping.Tier(shippingTier).Valid() {
-		return nil, fmt.Errorf("%w: shippingTier must be \"standard\", \"tracked\", or \"signature\"", ErrInvalidInput)
+	preset := shipping.Preset(shippingPreset)
+	if !preset.Valid() {
+		return nil, fmt.Errorf("%w: shippingPreset must be one of the 5 valid presets", ErrInvalidInput)
+	}
+	// Both free_envelope and tracked_envelope are only rejected outright
+	// when the final price is already known (a fixed-price listing) and
+	// already too high — an auction's final price isn't known yet, so
+	// there's nothing to validate against here; shipping.UpgradePreset
+	// resolves the real mechanism at sale time instead (free_envelope ->
+	// free_bubble_mailer, still free; tracked_envelope ->
+	// shippo_ground_advantage, since that one was never free to begin
+	// with). All three free presets are otherwise valid on auctions —
+	// free_bubble_mailer/free_box need no such check at all, since
+	// they're already package-mechanism at any price.
+	if in.Format == FormatFixed && preset.Mechanism() == shipping.MechanismLetter && in.PriceCents >= shipping.PackageRequiredCents {
+		if preset.IsFree() {
+			return nil, fmt.Errorf("%w: free envelope shipping isn't available on listings priced at $100 or more — pick free bubble mailer, free box, or a paid preset", ErrInvalidInput)
+		}
+		return nil, fmt.Errorf("%w: tracked envelope shipping isn't available on listings priced at $100 or more", ErrInvalidInput)
 	}
 	var auctionLength time.Duration
 	if in.Format == FormatAuction {
@@ -323,6 +350,25 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 			return nil, fmt.Errorf("%w: durationMinutes must be one of the allowed auction lengths", ErrInvalidDuration)
 		}
 		auctionLength = d
+	}
+
+	// Computed before the transaction starts, not inside it — this is a
+	// live HTTP call to Shippo, and holding a DB transaction open for the
+	// duration of a network round trip is exactly the kind of thing that
+	// starves the connection pool under load. A quote failure (Shippo not
+	// configured, seller has no address yet, or the call itself errors)
+	// is never fatal to listing creation — it just means the listing
+	// shows no estimate yet, same graceful-degradation posture as every
+	// other optional integration in this codebase.
+	var estimatedShippingCents *int64
+	if preset == shipping.PresetShippoGroundAdvantage && shippoClient.IsConfigured() {
+		if sellerAddr, err := address.Get(ctx, pool, sellerID); err == nil {
+			if sellerUser, err := user.Get(ctx, pool, sellerID); err == nil {
+				if cents, err := shippoClient.QuoteRate(ctx, sellerAddr, shipping.ReferenceAddress, sellerUser.Email, sellerUser.Email, preset); err == nil {
+					estimatedShippingCents = &cents
+				}
+			}
+		}
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -345,13 +391,13 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 	err = tx.QueryRow(ctx, `
 		insert into listings (seller_id, title, game, set_name, card_number, rarity, condition,
 			is_graded, grading_company, grade, cert_number, format, price_cents,
-			free_shipping, shipping_cost_cents, shipping_tier, image_urls)
-		values ($1,$2,$3,$4,nullif($5,''),nullif($6,''),$7,$8,nullif($9,''),nullif($10,''),nullif($11,''),$12,$13,$14,$15,$16,$17)
+			shipping_preset, estimated_shipping_cents, image_urls)
+		values ($1,$2,$3,$4,nullif($5,''),nullif($6,''),$7,$8,nullif($9,''),nullif($10,''),nullif($11,''),$12,$13,$14,$15,$16)
 		returning id
 	`,
 		sellerID, in.Title, in.Game, in.SetName, in.CardNumber, in.Rarity, in.Condition,
 		in.IsGraded, in.GradingCompany, in.Grade, in.CertNumber, string(in.Format), priceCents,
-		in.FreeShipping, in.ShippingCostCents, shippingTier, imageUrls,
+		shippingPreset, estimatedShippingCents, imageUrls,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert listing: %w", err)

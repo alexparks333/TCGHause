@@ -8,7 +8,7 @@ import ItemSpecifics from "@/components/ItemSpecifics";
 import SellerCard from "@/components/SellerCard";
 import MockCheckout from "@/components/MockCheckout";
 import { getListing, getWatchStatus } from "@/lib/api";
-import { formatPrice } from "@/lib/types";
+import { shippingDisplayText } from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
 
 // The mock "Purchasing" page a Buy It Now click lands on — deliberately a
@@ -127,9 +127,7 @@ export default async function CheckoutPage({
 
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <Truck size={14} />
-              {listing.freeShipping
-                ? "Free shipping"
-                : `+${formatPrice(listing.shippingCostCents)} shipping`}
+              {shippingDisplayText(listing)}
             </div>
 
             <SellerCard username={listing.sellerUsername} tier={listing.sellerTier} />

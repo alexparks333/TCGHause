@@ -106,17 +106,17 @@ type CreateInput struct {
 	// Empty for the ACH rail (still clearing at order-creation time — no
 	// charge exists yet) and for the no-Stripe mock-payment path.
 	StripeChargeID string
-	// ShippingTier/SignatureRequired are a permanent snapshot, computed by
-	// the caller (internal/shipping.Max(listingsPreset,
-	// shipping.RequiredTier(subtotalCents))) at the moment of sale — same
-	// "never recomputed after the fact" rule as TierPct above, and for the
-	// same reason: a seller changing their listing-time preset after the
-	// fact must never retroactively loosen what an already-sold order ships
-	// at. Deliberately plain strings/bool here, not internal/shipping.Tier
+	// ShippingPreset/SignatureRequired are a permanent snapshot, computed by
+	// the caller (internal/shipping.UpgradePreset(listingsPreset,
+	// finalAmountCents)) at the moment of sale — same "never recomputed
+	// after the fact" rule as TierPct above, and for the same reason: a
+	// seller changing their listing-time preset after the fact must never
+	// retroactively loosen what an already-sold order ships at.
+	// Deliberately a plain string/bool here, not internal/shipping.Preset
 	// itself — this package doesn't import internal/shipping (which already
 	// imports internal/order for the delivery webhook), so the caller does
-	// the tier arithmetic and hands over the already-decided result.
-	ShippingTier      string
+	// the preset arithmetic and hands over the already-decided result.
+	ShippingPreset    string
 	SignatureRequired bool
 }
 
@@ -155,9 +155,9 @@ func CreateFromWin(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, 
 		processingCostCents = int64(q.BankCost)
 	}
 
-	shippingTier := in.ShippingTier
-	if shippingTier == "" {
-		shippingTier = "standard"
+	shippingPreset := in.ShippingPreset
+	if shippingPreset == "" {
+		shippingPreset = "tracked_envelope"
 	}
 
 	var orderID string
@@ -167,7 +167,7 @@ func CreateFromWin(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, 
 			subtotal_cents, shipping_cents, fee_base_cents, seller_fee_cents,
 			seller_net_cents, discount_cents, tax_cents, charged_cents,
 			processing_cost_cents, stripe_payment_intent_id, stripe_charge_id,
-			shipping_tier, signature_required
+			shipping_preset, signature_required
 		) values (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10,
@@ -180,7 +180,7 @@ func CreateFromWin(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, 
 		int64(q.Subtotal), int64(q.Shipping), feeBase, int64(q.SellerFee),
 		int64(q.SellerNet), discountCents, taxCents, chargedCents,
 		processingCostCents, nullableString(in.StripePaymentIntentID), nullableString(in.StripeChargeID),
-		shippingTier, in.SignatureRequired,
+		shippingPreset, in.SignatureRequired,
 	).Scan(&orderID)
 	if err != nil {
 		return "", fmt.Errorf("insert order: %w", err)

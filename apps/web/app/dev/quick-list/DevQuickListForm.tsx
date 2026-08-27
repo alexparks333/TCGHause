@@ -63,7 +63,10 @@ export default function DevQuickListForm() {
           durationMinutes: format === "auction" ? durationMinutes : 0,
           buyItNowPriceCents:
             format === "auction" && buyItNowEnabled ? dollarsToCents(buyItNowPrice) : 0,
-          freeShipping: true,
+          // tracked_envelope works for both formats regardless of price —
+          // free presets are fixed-price-only and auctions can't use them
+          // at all (internal/listing.Create), and this tool creates both.
+          shippingPreset: "tracked_envelope",
           imageUrls: [],
         }),
       });

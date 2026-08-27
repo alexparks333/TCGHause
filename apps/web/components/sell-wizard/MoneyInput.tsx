@@ -48,7 +48,7 @@ export default function MoneyInput({
           value={value}
           onChange={handleChange}
           placeholder={placeholder}
-          className="w-full rounded-2xl border border-gray-300 bg-white py-3.5 pl-8 pr-4 text-xl font-bold text-gray-900 shadow-sm outline-none transition-colors focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/20"
+          className="w-full rounded-2xl border border-gray-300 bg-white py-3.5 pl-8 pr-4 text-xl font-bold text-gray-900 shadow-sm outline-none transition-colors placeholder:font-normal placeholder:text-gray-300 focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/20"
         />
       </span>
       {hint && <span className="text-xs font-normal text-gray-400">{hint}</span>}

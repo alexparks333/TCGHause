@@ -14,6 +14,7 @@ import (
 
 	"auctionhous-tcg/api/internal/address"
 	"auctionhous-tcg/api/internal/auction"
+	"auctionhous-tcg/api/internal/buyerreview"
 	"auctionhous-tcg/api/internal/cardcatalog"
 	"auctionhous-tcg/api/internal/dispute"
 	"auctionhous-tcg/api/internal/feedback"
@@ -47,6 +48,7 @@ func main() {
 	}
 	listing.AllowDevDurations = cfg.Environment != "production"
 	listing.AllowMissingPhotos = cfg.Environment != "production"
+	seller.AllowDevTierAdjust = cfg.Environment != "production"
 
 	ctx := context.Background()
 	mux := http.NewServeMux()
@@ -80,6 +82,9 @@ func main() {
 		mux.Handle("/me", verifier.RequireAuth(user.HandleMe(pool)))
 		mux.Handle("POST /me/username", verifier.RequireAuth(user.HandleSetUsername(pool)))
 		mux.Handle("POST /me/bio", verifier.RequireAuth(user.HandleSetBio(pool)))
+		mux.Handle("POST /me/stickers", verifier.RequireAuth(user.HandleSetStickers(pool)))
+		mux.Handle("POST /me/canvas", verifier.RequireAuth(user.HandleSetCanvas(pool)))
+		mux.Handle("POST /me/widgets", verifier.RequireAuth(user.HandleSetWidgets(pool)))
 		mux.Handle("GET /me/address", verifier.RequireAuth(address.HandleGet(pool)))
 		mux.Handle("POST /me/address", verifier.RequireAuth(address.HandleUpsert(pool)))
 		mux.HandleFunc("GET /usernames/available", user.HandleUsernameAvailable(pool))
@@ -88,13 +93,18 @@ func main() {
 		mux.Handle("POST /users/{username}/reviews", verifier.RequireAuth(feedback.HandleUpsert(pool)))
 		mux.Handle("GET /users/{username}/reviewable-purchases", verifier.RequireAuth(feedback.HandleEligibleListings(pool)))
 		mux.Handle("POST /users/{username}/reviews/{reviewId}/reply", verifier.RequireAuth(feedback.HandleReply(pool)))
+		mux.HandleFunc("GET /users/{username}/buyer-stats", buyerreview.HandleStatsForUser(pool))
 
-		mux.Handle("POST /listings", verifier.RequireAuth(listing.HandleCreate(pool)))
+		shippingClient := shipping.NewClient(cfg.ShippoAPIToken)
+		pbClient := shipping.NewPitneyBowesClient(cfg.PitneyBowesClientID, cfg.PitneyBowesClientSecret, cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
+		if !pbClient.IsConfigured() {
+			log.Println("PITNEY_BOWES_CLIENT_ID/SECRET not set — tracked-envelope label purchase disabled (see apps/api/.env.example)")
+		}
+		mux.Handle("POST /listings", verifier.RequireAuth(listing.HandleCreate(pool, shippingClient)))
 		mux.HandleFunc("GET /listings", listing.HandleList(pool))
 		mux.HandleFunc("GET /listings/counts", listing.HandleCounts(pool))
 		mux.HandleFunc("GET /listings/{id}", listing.HandleGet(pool))
 		paymentClient := payment.NewClient(cfg.StripeSecretKey)
-		shippingClient := shipping.NewClient(cfg.EasyPostAPIKey)
 		mailClient := mail.NewClient(cfg.ResendAPIKey, cfg.ClaimsNotifyFrom, cfg.ClaimsNotifyTo)
 		if !mailClient.IsConfigured() {
 			log.Println("RESEND_API_KEY not set — claim human-review email notifications disabled (see apps/api/.env.example)")
@@ -117,6 +127,18 @@ func main() {
 			mux.Handle("POST /me/seller/connect-account", verifier.RequireAuth(seller.HandleCreateConnectAccount(pool, paymentClient, cfg.WebOrigin)))
 			mux.Handle("POST /me/seller/connect-account/onboarding-link", verifier.RequireAuth(seller.HandleCreateOnboardingLink(pool, paymentClient, cfg.WebOrigin)))
 
+			mux.Handle("GET /me/seller/tier", verifier.RequireAuth(seller.HandleGetMyTier(pool)))
+			mux.Handle("POST /me/seller/haus-trust/apply", verifier.RequireAuth(seller.HandleApplyForHausTrust(pool)))
+			mux.Handle("GET /admin/haus-trust-applications", verifier.RequireAuth(seller.HandleAdminListHausTrustApplications(pool, cfg.AdminEmails)))
+			mux.Handle("POST /admin/haus-trust-applications/{id}/decide", verifier.RequireAuth(seller.HandleAdminDecideHausTrustApplication(pool, cfg.AdminEmails)))
+
+			// Dev-only — real auth (RequireAuth), gated to non-production at
+			// runtime inside DevAdjustTier itself (seller.AllowDevTierAdjust,
+			// set above). Registered unconditionally, same as every other
+			// dev-only route in this file (AllowDevDurations et al.) — the
+			// route existing isn't the gate, calling it successfully is.
+			mux.Handle("POST /me/seller/dev-tier-adjust", verifier.RequireAuth(seller.HandleDevAdjustTier(pool)))
+
 			mux.Handle("POST /me/payout/instant", verifier.RequireAuth(payout.HandleTriggerInstant(pool, paymentClient)))
 			mux.Handle("POST /me/payout/standard", verifier.RequireAuth(payout.HandleTriggerStandard(pool, paymentClient)))
 			mux.Handle("GET /me/payout/summary", verifier.RequireAuth(payout.HandleSummary(pool)))
@@ -125,10 +147,19 @@ func main() {
 			mux.Handle("GET /listings/{id}/order", verifier.RequireAuth(order.HandleGetForListing(pool)))
 			mux.Handle("POST /listings/{id}/order/evidence", verifier.RequireAuth(order.HandleAddEvidence(pool)))
 			mux.Handle("POST /listings/{id}/order/ship", verifier.RequireAuth(order.HandleShip(pool)))
-			if !shippingClient.IsConfigured() {
-				log.Println("EASYPOST_API_KEY not set — shipping-label purchase disabled (see apps/api/.env.example)")
+			mux.Handle("GET /listings/{id}/order/buyer-review", verifier.RequireAuth(buyerreview.HandleGetForListing(pool)))
+			mux.Handle("POST /listings/{id}/order/buyer-review", verifier.RequireAuth(buyerreview.HandleUpsert(pool)))
+			if !shippingClient.IsConfigured() && !pbClient.IsConfigured() {
+				log.Println("SHIPPO_API_TOKEN and PITNEY_BOWES_CLIENT_ID/SECRET not set — shipping-label purchase disabled (see apps/api/.env.example)")
 			} else {
-				mux.Handle("POST /listings/{id}/order/shipping-label", verifier.RequireAuth(shipping.HandleBuyLabel(pool, shippingClient)))
+				// HandleBuyLabel itself checks per-mechanism configuration and
+				// 503s if the specific vendor an order needs isn't set up —
+				// registering the route as soon as either is configured lets
+				// e.g. Shippo-only orders work even before Pitney Bowes
+				// credentials exist, matching this codebase's usual
+				// per-integration graceful degradation.
+				mux.Handle("POST /listings/{id}/order/shipping-label", verifier.RequireAuth(shipping.HandleBuyLabel(pool, shippingClient, pbClient)))
+				mux.Handle("GET /listings/{id}/order/shipping-label/download", verifier.RequireAuth(shipping.HandleDownloadLabel(pool)))
 			}
 
 			mux.Handle("GET /listings/{id}/order/claim", verifier.RequireAuth(dispute.HandleGetForListing(pool)))
@@ -158,7 +189,7 @@ func main() {
 			// Deliberately NOT wrapped in verifier.RequireAuth — Stripe
 			// authenticates via the Stripe-Signature header, verified
 			// inside HandleStripe itself, not a Supabase JWT.
-			mux.HandleFunc("POST /webhooks/stripe", webhook.HandleStripe(pool, cfg.StripeWebhookSecret))
+			mux.HandleFunc("POST /webhooks/stripe", webhook.HandleStripe(pool, cfg.StripeWebhookSecret, mailClient, cfg.WebOrigin))
 		}
 
 		if cfg.CarrierWebhookSecret == "" {

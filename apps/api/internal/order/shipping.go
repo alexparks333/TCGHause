@@ -15,7 +15,7 @@ import (
 // number this call just recorded. sellerID must be the order's actual
 // seller, same "never trust a client-supplied claim of who's fulfilling an
 // order" rule as MarkShipped (CLAUDE.md §5.3).
-func SetLabel(ctx context.Context, pool *pgxpool.Pool, orderID, sellerID, carrier, trackingNumber, easypostShipmentID, labelURL string, labelCostCents int64) error {
+func SetLabel(ctx context.Context, pool *pgxpool.Pool, orderID, sellerID, carrier, trackingNumber, providerShipmentID, labelURL string, labelCostCents int64) error {
 	var actualSellerID string
 	if err := pool.QueryRow(ctx, `select seller_id from orders where id = $1`, orderID).Scan(&actualSellerID); err != nil {
 		return fmt.Errorf("read order seller: %w", err)
@@ -27,9 +27,9 @@ func SetLabel(ctx context.Context, pool *pgxpool.Pool, orderID, sellerID, carrie
 	if _, err := pool.Exec(ctx, `
 		update orders set
 			tracking_number = $1, carrier = $2,
-			easypost_shipment_id = $3, label_cost_cents = $4, label_url = $5
+			provider_shipment_id = $3, label_cost_cents = $4, label_url = $5
 		where id = $6
-	`, trackingNumber, carrier, easypostShipmentID, labelCostCents, labelURL, orderID); err != nil {
+	`, trackingNumber, carrier, providerShipmentID, labelCostCents, labelURL, orderID); err != nil {
 		return fmt.Errorf("record shipping label: %w", err)
 	}
 	return nil

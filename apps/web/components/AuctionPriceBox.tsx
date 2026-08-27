@@ -7,6 +7,7 @@ import { Check, AlertTriangle } from "lucide-react";
 import BidBox from "./BidBox";
 import BuyNowButton from "./BuyNowButton";
 import SoldBanner from "./SoldBanner";
+import OwnerListingBanner from "./OwnerListingBanner";
 import PaymentCountdown from "./PaymentCountdown";
 import { getListing, type BidResult } from "@/lib/api";
 import { formatPrice, formatMsLeft, paymentDueAt, type Listing, type MyBid } from "@/lib/types";
@@ -211,7 +212,7 @@ export default function AuctionPriceBox({
           />
         )
       ) : isOwner ? (
-        <p className="mt-4 text-sm text-gray-500">This is your listing.</p>
+        <OwnerListingBanner />
       ) : isLoggedIn ? (
         <>
           {listing.buyItNowPriceCents && (

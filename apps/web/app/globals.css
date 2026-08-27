@@ -35,6 +35,13 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  /* Guards against `w-screen` full-bleed sections (e.g.
+     TierFeeExplorer's price-card row) creating a 1-2px horizontal
+     scrollbar — 100vw includes the scrollbar's own width on some
+     browsers, making a w-screen element very slightly wider than the
+     visible viewport. Safe globally since nothing on this site is meant
+     to overflow horizontally otherwise. */
+  overflow-x: hidden;
 }
 
 /* Utility: multi-line clamp for listing titles */
@@ -209,9 +216,94 @@ body {
   animation: card-fade-collapse 0.35s ease-in forwards;
 }
 
+@keyframes sticker-land {
+  0% {
+    transform: scale(0.35);
+    opacity: 0;
+  }
+  55% {
+    transform: scale(1.18);
+    opacity: 1;
+  }
+  75% {
+    transform: scale(0.94);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.animate-sticker-land {
+  animation: sticker-land 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-ended-ribbon,
-  .animate-card-fade-collapse {
+  .animate-card-fade-collapse,
+  .animate-sticker-land {
     animation: none;
   }
+}
+
+/* Profile canvas (components/profile/ProfileEditor.tsx and friends): the
+   customizable seller-profile canvas. This is the "vision board" the owner
+   drags widgets/stickers onto — it needs to read as a distinct surface from
+   the flat page behind it (both currently share --color-brand-surface, so
+   without this the canvas boundary was only a 1px border) without
+   competing with whatever's placed on top of it. Two soft radial tints
+   (gold top-left, navy bottom-right — the two brand colors, used at very
+   low opacity) plus a fine dot grid (a nod to a design-tool canvas/graph
+   paper, reinforcing "this is the thing you place stuff onto") sit under
+   everything else. Kept intentionally faint — this is the recessive layer,
+   stickers and widget cards are what's supposed to draw the eye. */
+.profile-canvas-backdrop {
+  background-color: var(--color-brand-surface);
+  background-image:
+    radial-gradient(circle at 10% -12%, rgba(184, 134, 11, 0.12), transparent 42%),
+    radial-gradient(circle at 104% 108%, rgba(15, 23, 41, 0.07), transparent 46%),
+    radial-gradient(rgba(15, 23, 41, 0.1) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    22px 22px;
+  background-position:
+    0 0,
+    0 0,
+    -3px -3px;
+}
+
+/* The dashed "drop it here" ghost slot (ProfileEditor.tsx, while a palette
+   widget is hovering the stack) and the empty-canvas hint — a slow breathe
+   so an editing seller's eye is drawn to where something needs to happen,
+   without being distracting enough to fight the sticker-land pop. */
+@keyframes canvas-hint-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.animate-canvas-hint-pulse {
+  animation: canvas-hint-pulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-canvas-hint-pulse {
+    animation: none;
+  }
+}
+
+/* react-colorful's picker defaults to a fixed 200x200 — stretch it to the
+   palette panel's content column (PaintToolbar.tsx) and shorten it a bit
+   so the Background tab doesn't become a scroll marathon. */
+.profile-paint-color-picker .react-colorful {
+  width: 100%;
+  height: 150px;
+}
+.profile-paint-color-picker .react-colorful__saturation {
+  border-radius: 10px 10px 0 0;
+}
+.profile-paint-color-picker .react-colorful__last-control {
+  border-radius: 0 0 10px 10px;
 }

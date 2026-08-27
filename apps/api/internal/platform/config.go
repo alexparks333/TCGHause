@@ -80,13 +80,26 @@ type Config struct {
 	// graceful-degradation pattern as every other optional integration
 	// here.
 	SupabaseServiceRoleKey string
-	// EasyPostAPIKey powers real shipping-label purchase
-	// (internal/shipping.Client, docs/Shipping_Research.md) — a test-mode
-	// key from EasyPost's dashboard works for local dev without touching
-	// real postage cost. Empty skips registering
+	// ShippoAPIToken powers real shipping-label purchase
+	// (internal/shipping.Client, docs/Shipping_Research.md) — a Test token
+	// from Shippo's dashboard works for local dev without touching real
+	// postage cost. Shippo, not EasyPost: EasyPost's account-verification
+	// wall never cleared despite repeated support contact, see
+	// internal/shipping's package doc. Empty skips registering
 	// POST /listings/{id}/order/shipping-label, same graceful-degradation
 	// pattern as every other optional integration here.
-	EasyPostAPIKey string
+	ShippoAPIToken string
+	// PitneyBowesClientID/PitneyBowesClientSecret power the
+	// tracked_envelope preset — First-Class Mail Letter with an
+	// Intelligent Mail Barcode (internal/shipping.PitneyBowesClient), the
+	// same mechanism eBay's own "Standard Envelope" is built on. Free
+	// self-serve developer sandbox (no sales call, no credit card) — get
+	// these from the Pitney Bowes developer portal. Empty skips
+	// registering the tracked_envelope side of label purchase, same
+	// graceful-degradation pattern as every other optional integration
+	// here.
+	PitneyBowesClientID     string
+	PitneyBowesClientSecret string
 	// ResendAPIKey powers internal/mail — the one real email this repo
 	// sends: alerting support when a claim reaches human_review
 	// (internal/dispute.Escalate). Empty means that alert is silently
@@ -121,7 +134,9 @@ func LoadConfig() (Config, error) {
 		CardCatalogProjectID:       getEnv("CARD_CATALOG_PROJECT_ID", ""),
 		CardCatalogCredentialsFile: getEnv("CARD_CATALOG_CREDENTIALS_FILE", ""),
 		SupabaseServiceRoleKey:     getEnv("SUPABASE_SERVICE_ROLE_KEY", ""),
-		EasyPostAPIKey:             getEnv("EASYPOST_API_KEY", ""),
+		ShippoAPIToken:             getEnv("SHIPPO_API_TOKEN", ""),
+		PitneyBowesClientID:        getEnv("PITNEY_BOWES_CLIENT_ID", ""),
+		PitneyBowesClientSecret:    getEnv("PITNEY_BOWES_CLIENT_SECRET", ""),
 		ResendAPIKey:               getEnv("RESEND_API_KEY", ""),
 		ClaimsNotifyFrom:           getEnv("CLAIMS_NOTIFY_FROM_EMAIL", "AuctionHous Claims <claims@auctionhous.net>"),
 		ClaimsNotifyTo:             getEnv("CLAIMS_NOTIFY_TO_EMAIL", "support@auctionhous.net"),

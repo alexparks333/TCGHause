@@ -18,6 +18,7 @@ import {
   formatSellerTier,
   listingSoldAt,
   sellerTierIconSrc,
+  shippingDisplayText,
 } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
 import { useMsLeft } from "@/lib/useMsLeft";
@@ -353,9 +354,7 @@ export default function ListingRow({
 
         <p className="mt-2 flex items-center gap-1.5 text-sm text-gray-500 sm:text-base">
           <Truck size={15} />
-          {listing.freeShipping
-            ? "Free shipping"
-            : `+${formatPrice(listing.shippingCostCents)} shipping`}
+          {shippingDisplayText(listing)}
         </p>
 
         <div className="mt-2 flex w-fit items-center gap-2 rounded-full bg-gray-200 py-1 pl-1 pr-3">

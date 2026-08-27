@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/chargeback"
 	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/order"
 	"auctionhous-tcg/api/internal/payment"
@@ -407,6 +408,20 @@ func releaseOrder(ctx context.Context, pool *pgxpool.Pool, paymentClient *paymen
 	if _, err := pool.Exec(ctx, `update orders set released_at = now() where id = $1`, orderID); err != nil {
 		return fmt.Errorf("stamp released_at: %w", err)
 	}
+
+	// A real Stripe chargeback (as opposed to the claim this order just
+	// resolved) can land on an order at any point, independent of our own
+	// dispute ladder — check right before the one Transfer call that would
+	// actually pay the seller, so a claim resolving in the seller's favor
+	// never pays out on a charge Stripe has already reversed or is still
+	// deciding on (internal/chargeback.HasBlockingChargeback).
+	if blocked, err := chargeback.HasBlockingChargeback(ctx, pool, orderID); err != nil {
+		log.Printf("dispute: failed to check chargeback status for order %s: %v", orderID, err)
+	} else if blocked {
+		log.Printf("dispute: order %s has a pending or lost chargeback — withholding seller payout", orderID)
+		return nil
+	}
+
 	if err := order.ReleaseFunds(ctx, pool, paymentClient, orderID); err != nil {
 		log.Printf("dispute: failed to release funds for order %s: %v", orderID, err)
 	}

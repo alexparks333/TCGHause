@@ -14,6 +14,7 @@ import (
 	"auctionhous-tcg/api/internal/paymentmethod"
 	"auctionhous-tcg/api/internal/platform"
 	"auctionhous-tcg/api/internal/seller"
+	"auctionhous-tcg/api/internal/shipping"
 )
 
 // ErrSellerNotOnboarded blocks checkout when the seller hasn't finished
@@ -42,9 +43,9 @@ type checkoutIntentResponse struct {
 	// SellerFeeCents/SellerNetCents are identical regardless of rail
 	// (design doc v2 §2.3's invariant) — informational, exposed for the
 	// same "transparency by default" reason as docs/PercentageModel.md §3.
-	SellerFeeCents int64                    `json:"sellerFeeCents"`
-	SellerNetCents int64                    `json:"sellerNetCents"`
-	TaxCents       int64                    `json:"taxCents"`
+	SellerFeeCents int64 `json:"sellerFeeCents"`
+	SellerNetCents int64 `json:"sellerNetCents"`
+	TaxCents       int64 `json:"taxCents"`
 	// SavedCard/SavedBank reflect whichever saved payment method actually
 	// ended up attached to this intent — either paymentMethodId (below)
 	// if the buyer explicitly picked one in MockCheckout.tsx's picker, or
@@ -162,7 +163,15 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			return
 		}
 
-		quote, _, err := quoteForListing(r.Context(), pool, lst.SellerID, subtotalCents)
+		// The listing's own preset is only the seller's listing-time floor —
+		// resolve it against this specific sale's subtotal the same way
+		// createOrderRecord does at capture time (shipping.UpgradePreset),
+		// so the authorized amount and the eventually-recorded order amount
+		// can never drift apart.
+		resolvedPreset, _ := shipping.UpgradePreset(shipping.Preset(lst.ShippingPreset), subtotalCents)
+		shippingCents := shipping.ChargedCents(resolvedPreset, lst.EstimatedShippingCents)
+
+		quote, _, _, err := quoteForListing(r.Context(), pool, lst.SellerID, subtotalCents, shippingCents)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

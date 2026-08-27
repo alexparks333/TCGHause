@@ -15,6 +15,13 @@
 // Dashboard (dashboard.stripe.com/test/webhooks), or `connect: true` if
 // creating it via the API. Without that, this handler is registered and
 // signature-verifies fine, it just never gets called for those event types.
+//
+// charge.dispute.created/updated/closed are the one platform-level event
+// family here that isn't a state-machine transition for an order this repo
+// already models — a real cardholder chargeback (internal/chargeback) is
+// tracked separately from internal/dispute's buyer-initiated claims, since
+// it can happen on any order at any point in its life, independent of
+// whether a claim was ever filed.
 package webhook
 
 import (
@@ -30,6 +37,8 @@ import (
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
 
+	"auctionhous-tcg/api/internal/chargeback"
+	"auctionhous-tcg/api/internal/mail"
 	"auctionhous-tcg/api/internal/order"
 	"auctionhous-tcg/api/internal/seller"
 )
@@ -51,8 +60,10 @@ func alreadyProcessed(ctx context.Context, pool *pgxpool.Pool, eventID, eventTyp
 // HandleStripe verifies and dispatches incoming Stripe webhook events. Must
 // be registered OUTSIDE the Supabase-JWT auth chain — Stripe authenticates
 // its own requests via the Stripe-Signature header, verified against
-// webhookSecret, not a bearer token.
-func HandleStripe(pool *pgxpool.Pool, webhookSecret string) http.HandlerFunc {
+// webhookSecret, not a bearer token. mailClient/webOrigin are only used by
+// the charge.dispute.created case (internal/chargeback.RecordCreated) —
+// every other event type here doesn't need them.
+func HandleStripe(pool *pgxpool.Pool, webhookSecret string, mailClient *mail.Client, webOrigin string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		payload, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -93,7 +104,7 @@ func HandleStripe(pool *pgxpool.Pool, webhookSecret string) http.HandlerFunc {
 			return
 		}
 
-		if err := dispatch(ctx, pool, event); err != nil {
+		if err := dispatch(ctx, pool, mailClient, webOrigin, event); err != nil {
 			log.Printf("webhook: handling %s (%s) failed: %v", event.ID, event.Type, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -102,8 +113,20 @@ func HandleStripe(pool *pgxpool.Pool, webhookSecret string) http.HandlerFunc {
 	}
 }
 
-func dispatch(ctx context.Context, pool *pgxpool.Pool, event stripe.Event) error {
+func dispatch(ctx context.Context, pool *pgxpool.Pool, mailClient *mail.Client, webOrigin string, event stripe.Event) error {
 	switch event.Type {
+	case "charge.dispute.created":
+		var d stripe.Dispute
+		if err := json.Unmarshal(event.Data.Raw, &d); err != nil {
+			return err
+		}
+		return chargeback.RecordCreated(ctx, pool, mailClient, webOrigin, &d)
+	case "charge.dispute.updated", "charge.dispute.closed":
+		var d stripe.Dispute
+		if err := json.Unmarshal(event.Data.Raw, &d); err != nil {
+			return err
+		}
+		return chargeback.RecordStatusChange(ctx, pool, &d)
 	case "account.updated":
 		var acct stripe.Account
 		if err := json.Unmarshal(event.Data.Raw, &acct); err != nil {

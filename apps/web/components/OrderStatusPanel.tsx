@@ -1,10 +1,11 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { CheckCircle2, Circle, Loader2, Package, Tag, Truck } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CheckCircle2, Circle, Loader2, Package, Truck } from "lucide-react";
 import {
   addOrderEvidence,
-  buyShippingLabel,
+  labelFromOrder,
   shipOrder,
   type EvidenceType,
   type Order,
@@ -13,12 +14,13 @@ import {
 } from "@/lib/api";
 import { uploadOrderEvidence } from "@/lib/storage";
 import { ORDER_STEPS, ORDER_OFF_PATH_LABELS } from "@/lib/orderSteps";
+import ShippingLabelControl, { isShippingLabelVisible } from "./ShippingLabelControl";
 
 // The real state-machine-driven order-status view (design doc v2 §5) —
 // replaces the old "shipping isn't wired up yet" placeholder. Renders
-// differently for the seller (fulfillment: evidence upload + mark-shipped)
-// vs. the buyer (a read-only timeline + arrival-photo prompt), since only
-// the seller can act on an order sitting in awaiting_ship.
+// differently for the seller (label control always available, plus
+// fulfillment: evidence upload + mark-shipped while awaiting_ship) vs. the
+// buyer (a read-only timeline + arrival-photo prompt).
 export default function OrderStatusPanel({
   initialOrder,
   viewerIsSeller,
@@ -27,6 +29,26 @@ export default function OrderStatusPanel({
   viewerIsSeller: boolean;
 }) {
   const [order, setOrder] = useState(initialOrder);
+  const router = useRouter();
+
+  // Updates this component's own local order state (so the label control
+  // and timeline reflect it instantly, no server round-trip needed) *and*
+  // triggers a server refetch — OrderReceipt/OrderBuyerCard on the order
+  // page are separate Server Components fed from the page's own initial
+  // fetch, so without this they'd keep showing "Not yet purchased"/the
+  // pre-label earnings number until a manual reload, same
+  // no-client-side-source-of-truth reasoning as every other
+  // router.refresh() call in this codebase.
+  function handleLabelChanged(label: ShippingLabel) {
+    setOrder((o) => ({
+      ...o,
+      labelUrl: label.labelUrl,
+      trackingNumber: label.trackingNumber,
+      carrier: label.carrier,
+      labelCostCents: label.costCents,
+    }));
+    router.refresh();
+  }
 
   return (
     <div className="mt-6 rounded-2xl border border-brand-border bg-white p-6">
@@ -45,6 +67,18 @@ export default function OrderStatusPanel({
           })}{" "}
           unless a claim is opened first.
         </p>
+      )}
+
+      {viewerIsSeller && isShippingLabelVisible(order.state, Boolean(order.labelUrl)) && (
+        <div className="mt-6 border-t border-brand-border pt-5">
+          <ShippingLabelControl
+            listingId={order.listingId}
+            initialLabel={labelFromOrder(order)}
+            shippingPreset={order.shippingPreset}
+            state={order.state}
+            onLabelChanged={handleLabelChanged}
+          />
+        </div>
       )}
 
       {viewerIsSeller && order.state === "awaiting_ship" && (
@@ -101,27 +135,28 @@ function SellerFulfillment({
 }) {
   const [uploaded, setUploaded] = useState<Set<EvidenceType>>(new Set());
   const [busyType, setBusyType] = useState<EvidenceType | null>(null);
-  const [carrier, setCarrier] = useState("");
-  const [trackingNumber, setTrackingNumber] = useState("");
+  const [carrier, setCarrier] = useState(order.carrier ?? "");
+  const [trackingNumber, setTrackingNumber] = useState(order.trackingNumber ?? "");
   const [shipping, setShipping] = useState(false);
   const [error, setError] = useState("");
-  const [label, setLabel] = useState<ShippingLabel | null>(null);
-  const [buyingLabel, setBuyingLabel] = useState(false);
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  async function handleBuyLabel() {
-    setBuyingLabel(true);
-    setError("");
-    try {
-      const bought = await buyShippingLabel(order.listingId);
-      setLabel(bought);
-      setCarrier(bought.carrier);
-      setTrackingNumber(bought.trackingNumber);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't buy a shipping label.");
-    } finally {
-      setBuyingLabel(false);
-    }
+  // The shipping label control (rendered by the parent, above this
+  // section) owns the actual label state — when a seller buys/changes a
+  // label there, it flows back through order.carrier/trackingNumber as new
+  // props, and these fields need to pick that up rather than freezing at
+  // whatever they were when this component first mounted. React's own
+  // recommended pattern for this ("adjusting state when a prop changes",
+  // not a useEffect — an Effect here would set state after an extra
+  // wasted render) is comparing against the last-seen prop value during
+  // render itself.
+  const [syncedCarrier, setSyncedCarrier] = useState(order.carrier);
+  const [syncedTrackingNumber, setSyncedTrackingNumber] = useState(order.trackingNumber);
+  if (order.carrier !== syncedCarrier || order.trackingNumber !== syncedTrackingNumber) {
+    setSyncedCarrier(order.carrier);
+    setSyncedTrackingNumber(order.trackingNumber);
+    setCarrier(order.carrier ?? "");
+    setTrackingNumber(order.trackingNumber ?? "");
   }
 
   async function handleUpload(type: EvidenceType, file: File) {
@@ -159,7 +194,7 @@ function SellerFulfillment({
         <Package size={16} /> Fulfill this order
       </h3>
       <p className="mt-1 text-xs text-gray-500">
-        Upload proof photos, then enter tracking to mark this shipped — required before we'll
+        Upload proof photos, then enter tracking to mark this shipped — required before we&apos;ll
         release payout for it (design doc v2 §5.3).
       </p>
 
@@ -200,47 +235,10 @@ function SellerFulfillment({
 
       {allUploaded && (
         <div className="mt-4 flex flex-col gap-3">
-          {label ? (
-            <div className="rounded-lg border border-brand-success/30 bg-brand-success/5 p-3 text-sm">
-              <p className="flex items-center gap-1.5 font-medium text-brand-success">
-                <Tag size={14} /> Label purchased — {label.carrier} {label.service}
-              </p>
-              <p className="mt-1 text-xs text-gray-600">
-                Tracking: <span className="font-medium">{label.trackingNumber}</span> · $
-                {(label.costCents / 100).toFixed(2)}
-              </p>
-              <a
-                href={label.labelUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-1 inline-block text-xs font-medium text-brand-navy hover:underline"
-              >
-                Print label / show QR code
-              </a>
-            </div>
-          ) : (
-            <div>
-              <button
-                type="button"
-                onClick={handleBuyLabel}
-                disabled={buyingLabel}
-                className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-brand-navy px-4 py-2 text-sm font-semibold text-brand-navy transition-colors hover:bg-brand-navy/5 disabled:opacity-60"
-              >
-                {buyingLabel ? <Loader2 size={14} className="animate-spin" /> : <Tag size={14} />}
-                Buy a shipping label
-              </button>
-              {order.shippingTier && order.shippingTier !== "standard" && (
-                <p className="mt-1.5 text-xs text-gray-500">
-                  {order.shippingTier === "signature"
-                    ? "This sale requires a signature on delivery."
-                    : "This sale requires carrier tracking."}
-                </p>
-              )}
-              <p className="mt-1 text-xs text-gray-400">
-                Or enter tracking manually below if you&apos;re shipping it yourself.
-              </p>
-            </div>
-          )}
+          <p className="text-xs text-gray-400">
+            Use the shipping label above, or enter tracking manually below if you&apos;re shipping it
+            yourself.
+          </p>
 
           <div className="flex flex-col gap-2 sm:flex-row">
             <select
@@ -307,7 +305,7 @@ function ArrivalPhotoPrompt({ orderId, listingId }: { orderId: string; listingId
     <div className="mt-6 border-t border-brand-border pt-5">
       <p className="text-sm text-gray-700">
         Photograph the package before unpacking — buyers who do get expedited claim handling if
-        anything's wrong.
+        anything&apos;s wrong.
       </p>
       <input
         ref={fileInput}

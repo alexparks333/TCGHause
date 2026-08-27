@@ -78,11 +78,12 @@ func scanSummary(row pgx.Row, viewerID string) (*Summary, error) {
 	o := &s.Order
 	err := row.Scan(
 		&o.ID, &o.ListingID, &o.BuyerID, &o.SellerID, &o.State, &o.Rail, &o.TierAtSale,
+		&o.TierPctAtSale,
 		&o.SubtotalCents, &o.ShippingCents, &o.SellerFeeCents, &o.SellerNetCents,
-		&o.TaxCents, &o.ChargedCents, &o.TrackingNumber, &o.Carrier,
+		&o.DiscountCents, &o.TaxCents, &o.ChargedCents, &o.TrackingNumber, &o.Carrier,
 		&o.ShippedAt, &o.DeliveredAt, &o.ClaimDeadline, &o.ReleasedAt, &o.CreatedAt,
-		&o.StripePaymentIntentID, &o.ShippingTier, &o.SignatureRequired,
-		&o.EasypostShipmentID, &o.LabelCostCents, &o.LabelURL,
+		&o.StripePaymentIntentID, &o.ShippingPreset, &o.SignatureRequired,
+		&o.ProviderShipmentID, &o.LabelCostCents, &o.LabelURL,
 		&s.ListingTitle, &s.ListingImageURL, &s.CounterpartyID, &s.CounterpartyUsername,
 		&s.SellerUsername, &s.BuyerUsername,
 	)

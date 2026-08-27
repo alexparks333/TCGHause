@@ -50,6 +50,57 @@ export async function deleteListingPhoto(url: string): Promise<void> {
   await supabase.storage.from(BUCKET).remove([path]);
 }
 
+const CANVAS_BUCKET = "profile-canvas";
+const CANVAS_MAX_BYTES = 20 * 1024 * 1024; // matches the bucket's file_size_limit
+
+// Uploads the painted profile canvas (a lossless PNG exported from the
+// editor's <canvas>) straight to Supabase Storage — same browser-direct
+// pattern and {user_id}/... folder scoping as uploadListingPhoto. The
+// resulting URL is recorded via lib/api.ts's setMyCanvas right after this
+// resolves; this function only touches Storage, never the user record.
+export async function uploadProfileCanvas(blob: Blob): Promise<string> {
+  if (blob.type !== "image/png") {
+    throw new Error("Canvas artwork must be a PNG.");
+  }
+  if (blob.size > CANVAS_MAX_BYTES) {
+    throw new Error("Canvas artwork must be under 20MB.");
+  }
+
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error("You must be signed in to save your canvas.");
+  }
+
+  const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
+
+  const { error } = await supabase.storage.from(CANVAS_BUCKET).upload(path, blob, {
+    cacheControl: "3600",
+    contentType: "image/png",
+    upsert: false,
+  });
+  if (error) throw new Error(error.message);
+
+  const { data } = supabase.storage.from(CANVAS_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}
+
+// Best-effort cleanup of a superseded (or orphaned) canvas PNG — each save
+// uploads a fresh object, so the previous one is deleted after the new
+// descriptor is recorded. Deleting needs the bucket's SELECT policy
+// (migration 0045, the 0005 gotcha), not just the DELETE policy.
+export async function deleteProfileCanvas(url: string): Promise<void> {
+  const marker = `/object/public/${CANVAS_BUCKET}/`;
+  const idx = url.indexOf(marker);
+  if (idx === -1) return;
+
+  const path = decodeURIComponent(url.slice(idx + marker.length));
+  const supabase = createClient();
+  await supabase.storage.from(CANVAS_BUCKET).remove([path]);
+}
+
 const EVIDENCE_BUCKET = "order-evidence";
 
 // Uploads shipping/arrival evidence straight to Supabase Storage, same

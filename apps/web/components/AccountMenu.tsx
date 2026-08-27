@@ -8,6 +8,7 @@ import Avatar from "./Avatar";
 import { createClient } from "@/lib/supabase/client";
 
 const ACTIVITY_LINKS = [
+  { href: "/account/profile", label: "Profile" },
   { href: "/account/watchlist", label: "Watchlist" },
   { href: "/account/selling", label: "Selling" },
   { href: "/account/transactions", label: "Transactions" },

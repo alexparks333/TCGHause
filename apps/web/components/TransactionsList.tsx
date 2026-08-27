@@ -18,6 +18,7 @@ import type { OrderState, OrderSummary } from "@/lib/api";
 import { formatPrice } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/format";
 import TransactionStepper from "@/components/TransactionStepper";
+import PrintLabelButton from "@/components/PrintLabelButton";
 
 type Mode = "purchased" | "sold";
 
@@ -31,8 +32,9 @@ type Mode = "purchased" | "sold";
 // game/search filters (CLAUDE.md §6.14): everything here operates over one
 // already-fetched list on one page, not a fresh fetch per filter change,
 // so there's no round trip for a URL to usefully drive.
-export default function TransactionsList({ orders }: { orders: OrderSummary[] }) {
+export default function TransactionsList({ orders: initialOrders }: { orders: OrderSummary[] }) {
   const router = useRouter();
+  const [orders, setOrders] = useState(initialOrders);
   const [mode, setMode] = useState<Mode>("purchased");
   const [query, setQuery] = useState("");
   const [collapseCompleted, setCollapseCompleted] = useState(false);
@@ -112,12 +114,19 @@ export default function TransactionsList({ orders }: { orders: OrderSummary[] })
           return (
             <div
               key={order.id}
-              className="overflow-hidden rounded-xl border border-brand-border bg-white"
+              className="rounded-xl border border-brand-border bg-white"
               style={{ borderLeft: `4px solid ${status.accent}` }}
             >
+              {/* rounded-t-xl/rounded-b-xl (below) do the corner-rounding
+                  overflow-hidden used to handle on the parent — that parent
+                  can't have overflow-hidden anymore, or it clips
+                  PrintLabelButton's dropdown whenever this card is short
+                  (e.g. the stepper band collapsed). */}
               <div
                 onClick={() => router.push(href)}
-                className="flex cursor-pointer items-center gap-4 p-4 transition-colors hover:bg-brand-surface"
+                className={`flex cursor-pointer items-center gap-4 rounded-t-xl p-4 transition-colors hover:bg-brand-surface ${
+                  stepperHidden ? "rounded-b-xl" : ""
+                }`}
               >
                 {order.listingImageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -155,17 +164,42 @@ export default function TransactionsList({ orders }: { orders: OrderSummary[] })
                   </p>
                 </div>
 
-                <div className="shrink-0 text-right">
+                <div className="flex shrink-0 flex-col items-end gap-1.5 text-right">
                   <p className="flex items-center justify-end gap-1 text-sm font-semibold" style={{ color: status.accent }}>
                     <StatusIcon size={14} />
                     {status.label}
                   </p>
                   <p className="text-xs text-gray-400">{formatRelativeTime(order.createdAt)}</p>
+                  {order.viewerIsSeller && order.labelUrl && (
+                    <PrintLabelButton
+                      listingId={order.listingId}
+                      className={
+                        order.state === "awaiting_ship"
+                          ? undefined
+                          : "opacity-50 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100"
+                      }
+                      onLabelChanged={(label) => {
+                        setOrders((prev) =>
+                          prev.map((o) =>
+                            o.id === order.id
+                              ? {
+                                  ...o,
+                                  labelUrl: label.labelUrl,
+                                  trackingNumber: label.trackingNumber,
+                                  carrier: label.carrier,
+                                  labelCostCents: label.costCents,
+                                }
+                              : o,
+                          ),
+                        );
+                      }}
+                    />
+                  )}
                 </div>
               </div>
 
               {!stepperHidden && (
-                <div className="border-t border-brand-border bg-brand-surface px-4 py-4 sm:px-6">
+                <div className="rounded-b-xl border-t border-brand-border bg-brand-surface px-4 py-4 sm:px-6">
                   <TransactionStepper
                     sellerUsername={order.sellerUsername}
                     buyerUsername={order.buyerUsername}

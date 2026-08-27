@@ -153,13 +153,15 @@ const highValueThresholdCents = 25000
 // doc v2 §5.2 lists that second hop as "auto" — no reason to wait for a
 // separate timer tick once delivery is confirmed), setting claim_deadline
 // to now + 3 days (orders under $250) or + 7 days ($250 and up).
-// Trusted-release — Gold/Haus Trust sellers skipping the claim window
-// entirely — is Phase 7 scope, once the tier engine exists to know who
-// actually qualifies; every seller gets the standard window for now.
-// paymentClient is only used by the trusted-release branch below (to
-// actually Transfer funds the instant delivery is confirmed) — every
-// other order still needs the ordinary claim-window timer
-// (cmd/worker.releaseElapsedClaimWindows) to do that later.
+//
+// Haus Trust sellers skip the claim window entirely — released the instant
+// the carrier scans it delivered, by explicit product decision. **Gold does
+// not get this** (an earlier version of this code gave both Gold and Haus
+// Trust instant release; that was scaled back to Haus Trust only). Tier
+// promotion/demotion isn't built yet (internal/seller.CurrentTier always
+// returns 'new'), so this branch can't actually fire for anyone until that
+// exists — it's real, correct code waiting on that dependency, not dead
+// code kept around by accident. See docs/BuyerSellerGuarantee.md §6.1/§6.3.
 func MarkDelivered(ctx context.Context, pool *pgxpool.Pool, paymentClient *payment.Client, orderID string) error {
 	if _, err := pool.Exec(ctx, `update orders set delivered_at = now() where id = $1`, orderID); err != nil {
 		return fmt.Errorf("record delivered_at: %w", err)
@@ -176,21 +178,40 @@ func MarkDelivered(ctx context.Context, pool *pgxpool.Pool, paymentClient *payme
 		return fmt.Errorf("read order: %w", err)
 	}
 
-	// Trusted release (design doc v2 §6.4): Gold/Haus Trust sellers skip
-	// the claim window entirely, releasing the instant delivery is
-	// confirmed — a concrete, felt benefit of reaching the top tiers, not
-	// just a lower commission rate.
 	tier, err := seller.CurrentTier(ctx, pool, sellerID)
 	if err != nil {
 		return fmt.Errorf("read seller tier: %w", err)
 	}
-	if tier == seller.TierGold || tier == seller.TierHausTrust {
+	if tier == seller.TierHausTrust {
 		if err := Transition(ctx, pool, orderID, StateDelivered, StateReleased); err != nil {
 			return err
 		}
 		if _, err := pool.Exec(ctx, `update orders set released_at = now() where id = $1`, orderID); err != nil {
 			return fmt.Errorf("stamp released_at: %w", err)
 		}
+
+		// internal/order can't import internal/chargeback (it imports this
+		// package, to resolve a dispute against an order) — same guard as
+		// internal/dispute's releaseOrder and cmd/worker's
+		// releaseElapsedClaimWindows, just inlined here rather than shared,
+		// to avoid that cycle. Keep this status list in sync with
+		// internal/chargeback's blocksRelease map if that ever changes —
+		// "won"/"warning_closed"/"prevented" are the only statuses that
+		// don't block a payout.
+		var blocked bool
+		if err := pool.QueryRow(ctx, `
+			select exists(
+				select 1 from chargebacks
+				where order_id = $1 and status not in ('won', 'warning_closed', 'prevented')
+			)
+		`, orderID).Scan(&blocked); err != nil {
+			return fmt.Errorf("check chargeback status: %w", err)
+		}
+		if blocked {
+			log.Printf("order: order %s has a pending or lost chargeback — withholding instant-release payout", orderID)
+			return nil
+		}
+
 		// Best-effort, same reasoning as every other release site
 		// (internal/order/release.go's own doc comment) — a failed
 		// Transfer here must never make the carrier's delivery webhook

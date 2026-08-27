@@ -28,12 +28,22 @@ const staleAfter = 2 * time.Minute
 // cardType, ...) are intentionally not decoded; this package only ever
 // reads, never re-derives pricing or variant logic that isn't ours to own.
 type Card struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	Set      string   `json:"set"`
-	SetName  string   `json:"setName"`
-	Number   string   `json:"number"`
-	Rarity   string   `json:"rarity"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Set     string `json:"set"`
+	SetName string `json:"setName"`
+	Number  string `json:"number"`
+	Rarity  string `json:"rarity"`
+	// Game is the AuctionHous game name (catalog.Game — "Pokémon", not TCG
+	// Haven's "pokemon" slug), stamped onto every result by Search/SearchAll
+	// rather than left for the caller to infer. Search already knows which
+	// game it was asked about; SearchAll needs it on the Card itself since
+	// its results are merged across all three catalog-backed games — the
+	// Favorite Card widget picker (unlike the Sell wizard's per-game
+	// CardSearch) has no single game context to fall back on, so this is
+	// what lets a picked card round-trip back through ProfileWidget without
+	// a second lookup.
+	Game     string   `json:"game"`
 	ImageURL string   `json:"imageUrl"`
 	Tags     []string `json:"tags"` // Riftbound only; nil for the other games
 	Hidden   bool     `json:"hidden"`

@@ -10,9 +10,22 @@ import ListingSection from "@/components/ListingSection";
 import AuctionPriceBox from "@/components/AuctionPriceBox";
 import BuyNowButton from "@/components/BuyNowButton";
 import SoldBanner from "@/components/SoldBanner";
-import { getListing, getActiveListings, getWatchStatus, getMyWatchedIds, getMyBids } from "@/lib/api";
-import { formatPrice, type MyBid } from "@/lib/types";
+import OwnerListingBanner from "@/components/OwnerListingBanner";
+import {
+  ApiError,
+  getListing,
+  getActiveListings,
+  getWatchStatus,
+  getMyWatchedIds,
+  getMyBids,
+  getOrderForListing,
+  labelFromOrder,
+  isShippingLabelVisible,
+  type Order,
+} from "@/lib/api";
+import { formatPrice, shippingCostLabel, shippingMethodLabel, type MyBid } from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
+import ShippingLabelControl from "@/components/ShippingLabelControl";
 
 export default async function ListingPage({
   params,
@@ -30,15 +43,35 @@ export default async function ListingPage({
   if (!listing) notFound();
 
   const isOwner = local?.userId === listing.sellerId;
+  // Covers both formats: a fixed-price listing sold the moment it has a
+  // buyerId; an auction sold once it closed with a real winner (either
+  // bought outright or won via bidding) — an auction that simply timed out
+  // with no bids ('no_bids') never counts, same distinction §6.13 already
+  // draws for the Selling page's Sold section.
+  const hasSold =
+    (listing.format === "fixed" && Boolean(listing.buyerId)) ||
+    (listing.format === "auction" && (listing.outcome === "sold" || listing.outcome === "bought_now"));
 
-  // None of these four depend on each other — only on `local`/`listing`,
-  // both already resolved — so they run in parallel instead of as four
-  // separate sequential round trips.
-  const [watchStatus, watchedIds, myBids, moreFromSellerRaw] = await Promise.all([
+  // None of these five depend on each other — only on `local`/`listing`,
+  // both already resolved — so they run in parallel instead of as five
+  // separate sequential round trips. The order fetch only fires for the
+  // seller viewing their own sold listing — internal/order.GetForListing
+  // would 404 for anyone else anyway (order.HandleGetForListing checks
+  // participancy), so there's no point calling it otherwise.
+  const [watchStatus, watchedIds, myBids, moreFromSellerRaw, order] = await Promise.all([
     local ? getWatchStatus(listing.id, local.accessToken).catch(() => null) : Promise.resolve(null),
     local ? getMyWatchedIds(local.accessToken).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
     local ? getMyBids(local.accessToken).catch(() => [] as MyBid[]) : Promise.resolve([] as MyBid[]),
     getActiveListings({ sellerId: listing.sellerId }),
+    isOwner && hasSold && local
+      ? getOrderForListing(listing.id, local.accessToken).catch((err) => {
+          // 404 just means this sale predates internal/order or went
+          // through the no-Stripe mock-payment path — nothing to show,
+          // not a real error. Anything else should still surface.
+          if (err instanceof ApiError && err.status === 404) return null;
+          throw err;
+        })
+      : Promise.resolve(null as Order | null),
   ]);
   const myBidsByListingId = new Map(myBids.map((b) => [b.listing.id, b]));
   const myBid = myBidsByListingId.get(listing.id);
@@ -60,8 +93,14 @@ export default async function ListingPage({
           <span className="truncate text-gray-700">{listing.title}</span>
         </nav>
 
-        <div className="grid gap-8 lg:grid-cols-3">
-          <div className="flex flex-col gap-6 lg:col-span-2">
+        {/* Left column is sized to the gallery's own max-width (48rem,
+            ListingGallery), not a fixed 2/3 page fraction — otherwise the
+            gallery (capped at 48rem regardless) leaves dead space before
+            the grid gap even starts on any screen wider than that. The
+            price/bid box gets all the leftover width instead, which is
+            what actually closes the gap without changing the photo's size. */}
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,48rem)_1fr]">
+          <div className="flex flex-col gap-3">
             <ListingGallery
               listingId={listing.id}
               imageUrls={listing.imageUrls ?? []}
@@ -73,11 +112,11 @@ export default async function ListingPage({
             />
 
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-brand-gold">
+              <p className="text-sm font-medium uppercase tracking-wide text-brand-gold">
                 {listing.game}
               </p>
-              <h1 className="mt-1 text-2xl font-bold text-gray-900">{listing.title}</h1>
-              <p className="mt-1 text-sm text-gray-500">
+              <h1 className="mt-1 text-3xl font-bold text-gray-900">{listing.title}</h1>
+              <p className="mt-1 text-base text-gray-500">
                 {listing.set}
                 {listing.cardNumber && ` · #${listing.cardNumber}`}
                 {listing.rarity && ` · ${listing.rarity}`}
@@ -85,13 +124,13 @@ export default async function ListingPage({
             </div>
 
             <div>
-              <h2 className="mb-2 text-sm font-semibold text-gray-900">Item specifics</h2>
+              <h2 className="mb-2 text-base font-semibold text-gray-900">Item specifics</h2>
               <ItemSpecifics listing={listing} />
             </div>
 
             <div>
-              <h2 className="mb-2 text-sm font-semibold text-gray-900">Description</h2>
-              <p className="text-sm leading-relaxed text-gray-600">
+              <h2 className="mb-2 text-base font-semibold text-gray-900">Description</h2>
+              <p className="text-base leading-relaxed text-gray-600">
                 {listing.isGraded
                   ? `Professionally graded ${listing.gradingCompany} ${listing.grade}. Ships in a protective case with full tracking.`
                   : `Condition: ${listing.condition}. Ships in a rigid card sleeve with tracked delivery.`}
@@ -99,7 +138,12 @@ export default async function ListingPage({
             </div>
           </div>
 
-          <aside className="flex flex-col gap-4">
+          {/* The gallery column is capped at 48rem; this column is
+              everything left over in the row (1fr), and now fills it
+              fully instead of sitting pinned to a narrow max-w-sm — the
+              price/bid box grows to use the real remaining width instead
+              of leaving a gap before the page's own edge padding. */}
+          <aside className="flex w-full flex-col gap-4">
             <div className="rounded-xl border border-brand-border bg-white p-5">
               {listing.format === "auction" ? (
                 <AuctionPriceBox
@@ -127,7 +171,7 @@ export default async function ListingPage({
                         }
                       />
                     ) : isOwner ? (
-                      <p className="text-sm text-gray-500">This is your listing.</p>
+                      <OwnerListingBanner />
                     ) : local ? (
                       <BuyNowButton listingId={listing.id} priceCents={listing.priceCents ?? 0} />
                     ) : (
@@ -142,17 +186,32 @@ export default async function ListingPage({
                 </>
               )}
 
-              <div className="mt-4 flex items-center gap-2 text-xs text-gray-500">
-                <Truck size={14} />
-                {listing.freeShipping
-                  ? "Free shipping"
-                  : `+${formatPrice(listing.shippingCostCents)} shipping`}
+              <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
+                <Truck size={18} />
+                <span>
+                  <span className="font-medium text-gray-700">{shippingCostLabel(listing)}</span>
+                  {" : "}
+                  {shippingMethodLabel(listing)}
+                </span>
               </div>
               <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
                 <ShieldCheck size={14} />
                 Payment protected — released to the seller after your delivery window
               </div>
             </div>
+
+            {isOwner && order && isShippingLabelVisible(order.state, Boolean(order.labelUrl)) && (
+              <div className="rounded-xl border border-brand-border bg-white p-5">
+                <h2 className="mb-2 text-sm font-semibold text-gray-900">Shipping</h2>
+                <ShippingLabelControl
+                  listingId={listing.id}
+                  initialLabel={labelFromOrder(order)}
+                  shippingPreset={order.shippingPreset}
+                  estimatedShippingCents={listing.estimatedShippingCents}
+                  state={order.state}
+                />
+              </div>
+            )}
 
             <SellerCard
               username={listing.sellerUsername}

@@ -386,28 +386,33 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 		return
 	}
 
-	quote, tier, err := quoteForListing(ctx, pool, sellerID, subtotalCents)
+	// The listing's own chosen preset is only a floor the seller opted into
+	// at listing time — never trusted alone, since a low-starting-bid
+	// auction can close well above the price that was knowable when the
+	// preset was picked. UpgradePreset keeps whichever mechanism is
+	// stricter, per internal/shipping's package doc, and this is also
+	// what determines the real shipping charge below — recomputed fresh
+	// here rather than trusted from whatever checkout.go authorized,
+	// same "never trust a stale precomputed value for money that actually
+	// moves" rule as the rest of this function.
+	resolvedPreset, signatureRequired := shipping.UpgradePreset(shipping.Preset(result.ShippingPreset), subtotalCents)
+	shippingCents := shipping.ChargedCents(resolvedPreset, result.EstimatedShippingCents)
+
+	quote, tier, tierPct, err := quoteForListing(ctx, pool, sellerID, subtotalCents, shippingCents)
 	if err != nil {
 		log.Printf("buy-now: failed to compute order quote for %s: %v", listingID, err)
 		return
 	}
 
-	// The listing's own chosen preset is only a floor the seller opted into
-	// at listing time — never trusted alone, since a low-starting-bid
-	// auction can close well above the price that was knowable when the
-	// preset was picked. shipping.Max keeps whichever of the two is
-	// stricter, per internal/shipping's package doc.
-	shippingTier := shipping.Max(shipping.Tier(result.ShippingTier), shipping.RequiredTier(subtotalCents))
-
 	orderID, err := order.CreateFromWin(ctx, pool, listingID, buyerID, sellerID, order.CreateInput{
 		Quote:                 quote,
 		Rail:                  rail,
 		Tier:                  string(tier),
-		TierPct:               seller.PctForTier(tier),
+		TierPct:               tierPct,
 		StripePaymentIntentID: paymentIntentID,
 		StripeChargeID:        chargeID,
-		ShippingTier:          string(shippingTier),
-		SignatureRequired:     shippingTier == shipping.TierSignature,
+		ShippingPreset:        string(resolvedPreset),
+		SignatureRequired:     signatureRequired,
 	})
 	if err != nil {
 		log.Printf("buy-now: failed to create order record for %s: %v", listingID, err)

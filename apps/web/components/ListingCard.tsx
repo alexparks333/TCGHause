@@ -16,6 +16,7 @@ import {
   formatSellerTier,
   listingSoldAt,
   sellerTierIconSrc,
+  shippingDisplayText,
 } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
 import { useMsLeft } from "@/lib/useMsLeft";
@@ -351,9 +352,7 @@ export default function ListingCard({
                 </p>
               )}
               <p className="mt-1 text-xs text-gray-500">
-                {listing.freeShipping
-                  ? "Free shipping"
-                  : `+${formatPrice(listing.shippingCostCents)} shipping`}
+                {shippingDisplayText(listing)}
               </p>
               {listing.buyItNowPriceCents && !hasEnded && isLoggedIn && (
                 <div className="mt-2">
@@ -373,9 +372,7 @@ export default function ListingCard({
                 {formatPrice(listing.priceCents ?? 0)}
               </p>
               <p className="text-xs text-gray-500">
-                {listing.freeShipping
-                  ? "Free shipping"
-                  : `+${formatPrice(listing.shippingCostCents)} shipping`}
+                {shippingDisplayText(listing)}
               </p>
               {listing.buyerId ? (
                 <p className="mt-2 text-sm font-semibold text-gray-900">

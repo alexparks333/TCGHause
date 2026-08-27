@@ -128,9 +128,10 @@ export default function AddressForm({ currentAddress }: { currentAddress: Addres
         />
       </div>
       <input
+        required
         value={form.phone ?? ""}
         onChange={(e) => set("phone", e.target.value)}
-        placeholder="Phone (optional)"
+        placeholder="Phone"
         className={inputClass}
       />
 

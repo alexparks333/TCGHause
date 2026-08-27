@@ -4,7 +4,6 @@ go 1.26.5
 
 require (
 	cloud.google.com/go/firestore v1.25.0
-	github.com/EasyPost/easypost-go/v4 v4.6.0
 	github.com/MicahParks/keyfunc/v3 v3.8.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.10.0
@@ -25,9 +24,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.17 // indirect
 	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

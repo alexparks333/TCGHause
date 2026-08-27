@@ -49,13 +49,28 @@ const TIERS = [
     accent: "text-brand-gold",
   },
   {
+    name: "Platinum",
+    tier: "platinum" as const,
+    rate: "5.50%",
+    requirement: "500+ completed orders",
+    accent: "text-[#8a8f98]",
+  },
+  {
     name: "Haus Trust",
     tier: "haus_trust" as const,
-    rate: "5.50%",
-    requirement: "500+ completed orders + internal review",
+    rate: "Custom",
+    requirement: "Platinum + application, by invitation",
     accent: "text-sky-600",
   },
 ];
+
+// The fee explorer below can't do live math against "Custom" — Haus
+// Trust's rate is negotiated per seller, there's no one number to plug
+// in — so it only ever gets the tiers with a real, fixed percentage.
+// TierFeeExplorer's own fallback (tiers[0] when the selected/initial tier
+// isn't in the list) means a Haus Trust viewer just lands on New here,
+// same as anyone else visiting the page logged out.
+const EXPLORABLE_TIERS = TIERS.filter((t) => t.tier !== "haus_trust");
 
 export default async function TiersPage() {
   // Same session-then-tier read as Header (and both are cache()-wrapped,
@@ -92,7 +107,11 @@ export default async function TiersPage() {
           more orders with a clean dispute record and your rate drops automatically — no
           application, nothing to ask for. Most sellers land on{" "}
           <span className="font-semibold text-brand-gold">Gold</span> (6% + $0.30);{" "}
-          <span className="font-semibold text-sky-600">5.50%</span> is the rate you earn at the top.
+          <span className="font-semibold text-[#8a8f98]">Platinum</span> earns{" "}
+          <span className="font-semibold text-[#8a8f98]">5.50%</span> automatically the same way.{" "}
+          <span className="font-semibold text-sky-600">Haus Trust</span> is different — an
+          invitation-only application for Platinum sellers, with a rate we negotiate individually
+          based on what you sell.
         </p>
 
         {/* An open list of floating cards, not a boxed table — each tier
@@ -162,7 +181,7 @@ export default async function TiersPage() {
         </ul>
 
         <h2 className="mt-10 text-lg font-bold text-gray-900">What that looks like</h2>
-        <TierFeeExplorer tiers={TIERS} initialTier={myTier} />
+        <TierFeeExplorer tiers={EXPLORABLE_TIERS} initialTier={myTier} />
 
         <div className="mt-8 flex items-start gap-2 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-brand-border text-sm text-gray-600">
           <Landmark size={18} className="mt-0.5 shrink-0 text-brand-navy" />

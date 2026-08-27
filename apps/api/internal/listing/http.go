@@ -10,11 +10,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"auctionhous-tcg/api/internal/platform"
+	"auctionhous-tcg/api/internal/shipping"
 )
 
 // HandleCreate requires auth — the listing's seller is the caller's JWT
-// subject, never a client-supplied field.
-func HandleCreate(pool *pgxpool.Pool) http.HandlerFunc {
+// subject, never a client-supplied field. shippoClient is only used to
+// compute a shippo_ground_advantage listing's one-time cost estimate — nil
+// (Shippo not configured) just means new listings show no estimate yet,
+// same graceful-degradation posture as everywhere else.
+func HandleCreate(pool *pgxpool.Pool, shippoClient *shipping.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sellerID, ok := platform.UserIDFromContext(r.Context())
 		if !ok {
@@ -28,7 +32,7 @@ func HandleCreate(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		lst, err := Create(r.Context(), pool, sellerID, in)
+		lst, err := Create(r.Context(), pool, sellerID, in, shippoClient)
 		if err != nil {
 			status := http.StatusInternalServerError
 			switch {

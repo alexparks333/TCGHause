@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { ArrowDown, ArrowUp } from "lucide-react";
+import { devAdjustTier, getMyTier, type SellerTier } from "@/lib/api";
+import { formatSellerTier } from "@/lib/types";
 
 const ACCOUNTS = [
   { key: "seller", label: "Seller" },
@@ -98,12 +101,99 @@ export default function DevQuickSwitch({
         })}
       </div>
       {error && <p className="max-w-[220px] text-brand-urgent">{error}</p>}
+
+      <DevTierAdjuster currentEmail={currentEmail} />
+
       <Link
         href="/dev/quick-list"
         className="text-amber-800 underline decoration-dotted underline-offset-2 hover:text-amber-900"
       >
         Quick list (no photos)
       </Link>
+    </div>
+  );
+}
+
+// Nudges the CURRENTLY signed-in account's own seller tier up/down one
+// step, bypassing every real promotion gate — a raw testing tool for
+// seeing what each tier's experience looks like without racking up 500
+// real orders and reviews first. Calls the real backend
+// (apps/api/internal/seller.DevAdjustTier), which refuses to run at all
+// outside development independent of whether this panel is even rendered
+// — same belt-and-suspenders shape as switchTo/app/api/dev/switch-user
+// above. Re-fetches whenever the signed-in account changes, since tier is
+// per-account, not a global dev-panel setting.
+function DevTierAdjuster({ currentEmail }: { currentEmail: string | null }) {
+  const [tier, setTier] = useState<SellerTier | null>(null);
+  const [busy, setBusy] = useState<"up" | "down" | null>(null);
+  const [error, setError] = useState("");
+
+  async function refresh() {
+    try {
+      const status = await getMyTier();
+      setTier(status.tier);
+      setError("");
+    } catch (err) {
+      // This component only ever calls refresh() once currentEmail is set
+      // (see the early return below), so a failure here is a real problem —
+      // e.g. the API server hasn't picked up this route yet, or a migration
+      // hasn't been applied — not a "not signed in" case to fail quietly on.
+      // Silently swallowing this previously made a broken fetch look
+      // identical to a disabled button with nothing wrong.
+      setTier(null);
+      setError(err instanceof Error ? err.message : "Couldn't load tier");
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentEmail]);
+
+  async function adjust(direction: "up" | "down") {
+    setBusy(direction);
+    setError("");
+    try {
+      const { tier: newTier } = await devAdjustTier(direction);
+      setTier(newTier);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tier adjust failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!currentEmail) return null;
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-amber-200 pt-2">
+      <p className="text-amber-700">
+        Tier:{" "}
+        <span className="font-semibold text-amber-900">
+          {tier ? formatSellerTier(tier) : "…"}
+        </span>
+      </p>
+      <div className="flex gap-1.5">
+        <button
+          type="button"
+          onClick={() => adjust("down")}
+          disabled={busy !== null || !tier}
+          title="Move down one tier"
+          className="flex items-center gap-1 rounded-md border border-amber-300 bg-white px-2 py-1 font-medium text-amber-800 transition-colors hover:bg-amber-100 disabled:opacity-50"
+        >
+          <ArrowDown size={12} /> Down
+        </button>
+        <button
+          type="button"
+          onClick={() => adjust("up")}
+          disabled={busy !== null || !tier}
+          title="Move up one tier"
+          className="flex items-center gap-1 rounded-md border border-amber-300 bg-white px-2 py-1 font-medium text-amber-800 transition-colors hover:bg-amber-100 disabled:opacity-50"
+        >
+          <ArrowUp size={12} /> Up
+        </button>
+      </div>
+      {error && <p className="max-w-[220px] text-brand-urgent">{error}</p>}
     </div>
   );
 }

@@ -83,9 +83,13 @@ export default function ListingGallery({
   }
 
   return (
-    // 1.5x the old max-w-xl (576px -> 864px) — the thumbnail column stays
-    // a fixed 80/100px either way, so all the extra width goes straight
-    // into the main viewer via its 1fr grid column.
+    // 1.5x the old max-w-xl (576px -> 864px... actually 48rem) — deliberately
+    // capped, not full-width: the page's own grid column sizes itself to
+    // match this (see app/listing/[id]/page.tsx's grid-cols), so the gap
+    // to the price box is closed by giving THAT column the leftover space,
+    // not by stretching this photo past its intended size. The thumbnail
+    // column stays a fixed 80/100px either way, so all the extra width
+    // goes straight into the main viewer via its 1fr grid column.
     <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

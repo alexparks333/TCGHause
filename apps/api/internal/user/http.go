@@ -105,6 +105,107 @@ func HandleGetByUsername(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+type setStickersInput struct {
+	Stickers []ProfileSticker `json:"stickers"`
+}
+
+// HandleSetStickers backs the Background tab of the profile canvas editor
+// (app/seller/[username]/page.tsx, owner-only) — always replaces the
+// caller's whole arrangement (SetStickers' doc comment).
+func HandleSetStickers(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var in setStickersInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		u, err := SetStickers(r.Context(), pool, userID, in.Stickers)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrInvalidStickers), errors.Is(err, ErrTooManyStickers):
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(u)
+	}
+}
+
+type setWidgetsInput struct {
+	Widgets []ProfileWidget `json:"widgets"`
+}
+
+// HandleSetWidgets backs the Widgets tab of the profile canvas editor —
+// always replaces the caller's whole layout (SetWidgets' doc comment).
+func HandleSetWidgets(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var in setWidgetsInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		u, err := SetWidgets(r.Context(), pool, userID, in.Widgets)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrInvalidWidgets), errors.Is(err, ErrTooManyWidgets):
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(u)
+	}
+}
+
+type setCanvasInput struct {
+	Canvas *ProfileCanvas `json:"canvas"`
+}
+
+// HandleSetCanvas backs the profile editor's paint-layer save — the PNG
+// itself goes straight from the browser to Supabase Storage (lib/storage.ts,
+// same client-side pattern as listing photos); this endpoint only records
+// the descriptor. A null canvas clears the painting (SetCanvas doc comment).
+func HandleSetCanvas(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var in setCanvasInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		u, err := SetCanvas(r.Context(), pool, userID, in.Canvas)
+		if err != nil {
+			if errors.Is(err, ErrInvalidCanvas) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(u)
+	}
+}
+
 type setBioInput struct {
 	Bio string `json:"bio"`
 }

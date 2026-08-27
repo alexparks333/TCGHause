@@ -63,9 +63,65 @@ func (c *Client) Search(ctx context.Context, auctionHousGame, query string) ([]C
 	}
 	results := make([]Card, len(matches))
 	for i, m := range matches {
+		m.card.Game = auctionHousGame
 		results[i] = m.card
 	}
 	return results, true, nil
+}
+
+// SearchAll runs Search across every game SupportedGames lists and merges
+// the results back into one score-ranked, maxResults-capped list — used by
+// the Favorite Card widget picker, which (unlike the Sell wizard's
+// per-game CardSearch) has no single game already chosen to search
+// within. Each game's own top maxResults matches are fetched independently
+// (so a strong match in one game can't be crowded out of contention by an
+// unrelated game's results before merging), then re-capped once combined.
+func (c *Client) SearchAll(ctx context.Context, query string) ([]Card, error) {
+	type scored struct {
+		card  Card
+		score int
+	}
+	nameQuery, numberFilter := parseSearchQuery(query)
+	if nameQuery == "" && numberFilter == "" {
+		return nil, nil
+	}
+
+	var all []scored
+	for _, game := range SupportedGames {
+		slug, _ := gameSlug(game)
+		cards, err := c.visibleCards(ctx, slug)
+		if err != nil {
+			// One game's Firestore hiccup shouldn't blank the results for
+			// the other two — skip it and keep going, same "degrade, don't
+			// fail the whole request" spirit as visibleCards' own stale-cache
+			// fallback.
+			continue
+		}
+		for _, card := range cards {
+			if numberFilter != "" && normNum(card.Number) != numberFilter {
+				continue
+			}
+			score := 0
+			if nameQuery != "" {
+				score = scoreMatch(card.Name, nameQuery, card.Tags)
+				if score < 0 {
+					continue
+				}
+			}
+			card.Game = game
+			all = append(all, scored{card, score})
+		}
+	}
+
+	sort.SliceStable(all, func(i, j int) bool { return all[i].score > all[j].score })
+	if len(all) > maxResults {
+		all = all[:maxResults]
+	}
+	results := make([]Card, len(all))
+	for i, m := range all {
+		results[i] = m.card
+	}
+	return results, nil
 }
 
 // parseSearchQuery splits a raw query into a name portion and an optional

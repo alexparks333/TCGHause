@@ -23,21 +23,34 @@ func noTax(_ money.Cents, _ fees.Address) (money.Cents, error) {
 }
 
 // quoteForListing recomputes a fresh fees.Quote from the seller's
-// currently-stored tier and the given subtotal — never trusted from the
-// client, same "always re-check server-side" principle as everywhere else
-// real money moves in this codebase (CLAUDE.md §5.3). Shared by
-// checkout.go (the initial quote, at authorization time) and buynow.go
-// (re-verified fresh again at capture time), so both always price an order
-// identically. Shipping is always 0 for now — no shipping-cost field
-// exists on a listing yet.
-func quoteForListing(ctx context.Context, pool *pgxpool.Pool, sellerID string, subtotalCents int64) (fees.Quote, seller.Tier, error) {
+// currently-stored tier and the given subtotal/shipping — never trusted
+// from the client, same "always re-check server-side" principle as
+// everywhere else real money moves in this codebase (CLAUDE.md §5.3).
+// Shared by checkout.go (the initial quote, at authorization time) and
+// buynow.go (re-verified fresh again at capture time), so both always
+// price an order identically. shippingCents is the caller's
+// responsibility to compute via shipping.ChargedCents against the
+// order's actually-resolved preset — this function just plugs it into
+// the fee math, it doesn't know anything about presets itself.
+//
+// Returns the percentage actually used alongside the quote/tier —
+// seller.PctForSeller (not PctForTier) is what resolves a Haus Trust
+// seller's individually negotiated rate, so callers must use the returned
+// pct for anything downstream (e.g. order.CreateInput.TierPct) rather than
+// re-deriving it from tier alone, or a Haus Trust order would get priced
+// against a shared constant nobody actually agreed to.
+func quoteForListing(ctx context.Context, pool *pgxpool.Pool, sellerID string, subtotalCents, shippingCents int64) (fees.Quote, seller.Tier, float64, error) {
 	tier, err := seller.CurrentTier(ctx, pool, sellerID)
 	if err != nil {
-		return fees.Quote{}, "", err
+		return fees.Quote{}, "", 0, err
 	}
-	q, err := fees.ComputeQuote(money.Cents(subtotalCents), 0, seller.PctForTier(tier), noTax, fees.Address{})
+	pct, err := seller.PctForSeller(ctx, pool, sellerID, tier)
 	if err != nil {
-		return fees.Quote{}, "", err
+		return fees.Quote{}, "", 0, err
 	}
-	return q, tier, nil
+	q, err := fees.ComputeQuote(money.Cents(subtotalCents), money.Cents(shippingCents), pct, noTax, fees.Address{})
+	if err != nil {
+		return fees.Quote{}, "", 0, err
+	}
+	return q, tier, pct, nil
 }

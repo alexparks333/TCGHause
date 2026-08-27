@@ -1,6 +1,6 @@
 import { cache } from "react";
 import { createClient } from "./supabase/client";
-import type { CatalogCard, Listing, MyBid } from "./types";
+import type { CatalogCard, Listing, MyBid, ShippingPreset } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -126,6 +126,16 @@ export async function searchCatalogCards(game: string, query: string): Promise<C
   return res.json();
 }
 
+// Same endpoint, `game` omitted — the API merges results across every
+// catalog-backed game (cardcatalog.SearchAll) instead of just one. Used by
+// the Favorite Card widget picker, which (unlike the Sell wizard's
+// per-game CardSearch) has no game already chosen to search within.
+export async function searchCatalogCardsAllGames(query: string): Promise<CatalogCard[]> {
+  const res = await fetch(`${API_URL}/catalog/search?q=${encodeURIComponent(query)}`);
+  if (!res.ok) throw new Error(`Card search failed: ${res.status}`);
+  return res.json();
+}
+
 // Requires auth — Server Components pass the session's access token
 // explicitly since there's no browser Supabase client available there.
 export async function getMyBids(accessToken: string): Promise<MyBid[]> {
@@ -163,7 +173,63 @@ export async function getMySales(accessToken: string): Promise<Listing[]> {
 }
 
 // Mirrors apps/api/internal/seller.Tier exactly.
-export type SellerTier = "new" | "bronze" | "silver" | "gold" | "haus_trust";
+export type SellerTier = "new" | "bronze" | "silver" | "gold" | "platinum" | "haus_trust";
+
+// Mirrors apps/api/internal/user.ProfileSticker exactly. xPct is a
+// percentage (0-100) of the canvas's width. yPx is pixels down from the
+// canvas's top edge, deliberately NOT a percentage — see
+// ProfileSticker's doc comment in user.go for why (the canvas's height
+// grows/shrinks with the widget stack; a percentage-of-height Y would
+// recompute to a different pixel position every time that happened).
+// rotationDeg/scale aren't editable yet (no rotate/resize handles in the
+// UI) but are shipped now so a future editor upgrade is additive, not
+// another API-shape change.
+export interface ProfileSticker {
+  id: string;
+  kind: string;
+  xPct: number;
+  yPx: number;
+  rotationDeg: number;
+  scale: number;
+}
+
+// Mirrors apps/api/internal/user.FavoriteCardRef exactly — a denormalized
+// snapshot of one CatalogCard result, not a foreign key (internal/
+// cardcatalog has no "get by id" lookup to re-fetch one from).
+export interface FavoriteCardRef {
+  id: string;
+  game: string;
+  name: string;
+  setName: string;
+  number: string;
+  rarity: string;
+  imageUrl: string;
+}
+
+// Mirrors apps/api/internal/user.ProfileWidget exactly. The canvas is a
+// 3-column grid — col (0-2) is which column a widget starts at; order in
+// the array decides which row (a full-width type like "listings" always
+// starts a fresh row; col is meaningless for it, the frontend never reads
+// it there). favoriteCard is only meaningful for the "favorite_card"
+// type — null means "added but not configured yet".
+export interface ProfileWidget {
+  id: string;
+  type: string;
+  col: number;
+  favoriteCard: FavoriteCardRef | null;
+}
+
+// Mirrors apps/api/internal/user.ProfileCanvas exactly. The painted
+// profile background: url points at a lossless PNG in the profile-canvas
+// Storage bucket (the pixels never touch the Go API), width/height are the
+// bitmap's intrinsic size — width is the fixed PAINT_DESIGN_WIDTH the
+// owner painted at, height grows as widgets extend the page (new pixel
+// rows added at the bottom, never a rescale).
+export interface ProfileCanvas {
+  url: string;
+  width: number;
+  height: number;
+}
 
 export interface Me {
   id: string;
@@ -172,6 +238,9 @@ export interface Me {
   bio: string | null;
   createdAt: string;
   tier: SellerTier;
+  stickers: ProfileSticker[];
+  widgets: ProfileWidget[];
+  profileCanvas: ProfileCanvas | null;
 }
 
 // Requires auth — same explicit-accessToken shape as getMyBids, since
@@ -236,6 +305,9 @@ export interface PublicUser {
   bio: string | null;
   createdAt: string;
   tier: SellerTier;
+  stickers: ProfileSticker[];
+  widgets: ProfileWidget[];
+  profileCanvas: ProfileCanvas | null;
 }
 
 // Public — no auth needed. Backs the seller profile page
@@ -247,6 +319,35 @@ export async function getUserByUsername(username: string): Promise<PublicUser | 
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to load user: ${res.status}`);
   return res.json();
+}
+
+// Client-only (apiFetch) — always sends the caller's whole background
+// arrangement, mirroring internal/user.SetStickers' replace-not-patch
+// semantics.
+export async function setMyStickers(stickers: ProfileSticker[]): Promise<Me> {
+  return apiFetch("/me/stickers", {
+    method: "POST",
+    body: JSON.stringify({ stickers }),
+  });
+}
+
+// Client-only (apiFetch) — always sends the caller's whole widget layout,
+// mirroring internal/user.SetWidgets' replace-not-patch semantics.
+export async function setMyWidgets(widgets: ProfileWidget[]): Promise<Me> {
+  return apiFetch("/me/widgets", {
+    method: "POST",
+    body: JSON.stringify({ widgets }),
+  });
+}
+
+// Client-only (apiFetch) — records the painted canvas descriptor after the
+// PNG itself has been uploaded to Storage (lib/storage.ts's
+// uploadProfileCanvas). null clears the painting entirely.
+export async function setMyCanvas(canvas: ProfileCanvas | null): Promise<Me> {
+  return apiFetch("/me/canvas", {
+    method: "POST",
+    body: JSON.stringify({ canvas }),
+  });
 }
 
 export interface Review {
@@ -309,6 +410,71 @@ export async function getReviewablePurchases(
   if (!res.ok) return [];
   const data = await res.json();
   return data.listings ?? [];
+}
+
+// Buyer-side mirror of Review/ReviewSummary above — the seller's rating of
+// the buyer on one specific order, plus that buyer's aggregate reputation
+// (mirrors apps/api/internal/buyerreview exactly).
+export type BuyerReviewTag = "trustworthy" | "suspicious" | "aggressive";
+
+export interface BuyerReview {
+  id: string;
+  orderId: string;
+  buyerId: string;
+  reviewerId: string;
+  listingTitle: string;
+  rating: number;
+  tag: BuyerReviewTag;
+  comment: string | null;
+  createdAt: string;
+}
+
+export interface BuyerStats {
+  buysMade: number;
+  refundedCount: number;
+  refundedPct: number;
+  claimsCount: number;
+  claimsPct: number;
+  tag: BuyerReviewTag | null;
+  reviewCount: number;
+  averageRating: number;
+}
+
+// Requires auth (the caller must be this order's seller) — same
+// explicit-accessToken shape as getOrderForListing, since the order page
+// fetches this server-side alongside the order itself. Null means the
+// seller hasn't reviewed this buyer yet, not an error.
+export async function getBuyerReviewForListing(
+  listingId: string,
+  accessToken: string
+): Promise<BuyerReview | null> {
+  const res = await fetch(`${API_URL}/listings/${listingId}/order/buyer-review`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// Client-side submit (used by BuyerReviewForm) — same apiFetch-from-a-
+// component pattern as ReviewForm/SellerReplyForm.
+export async function submitBuyerReview(
+  listingId: string,
+  input: { rating: number; tag: BuyerReviewTag; comment: string }
+): Promise<BuyerReview> {
+  return apiFetch(`/listings/${listingId}/order/buyer-review`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+// Public — no auth needed, same as getSellerReviews.
+export async function getBuyerStats(username: string): Promise<BuyerStats> {
+  const res = await fetch(`${API_URL}/users/${encodeURIComponent(username)}/buyer-stats`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to load buyer stats: ${res.status}`);
+  return res.json();
 }
 
 export interface WatchStatus {
@@ -750,6 +916,35 @@ export type OrderState =
   | "refunded"
   | "cancelled";
 
+// Once shipped, the label is still occasionally needed (reprinting a lost
+// copy, referencing it as dispute evidence) but is no longer the primary
+// thing on the screen — "ghosted": dim by default, full opacity on
+// hover/focus so it's still clickable, not visually competing with
+// whatever's actually current. claim_open/claim_window are included since
+// a dispute doesn't erase the fact something shipped.
+const SHIPPING_LABEL_GHOSTED_STATES: OrderState[] = [
+  "shipped",
+  "delivered",
+  "claim_window",
+  "claim_open",
+  "released",
+];
+
+// Shared visibility rule for ShippingLabelControl, used both by that
+// component itself and by server components (the listing detail page)
+// that wrap it in their own container and need to know whether to render
+// that wrapper at all. Lives here (a plain module, not "use client") so a
+// Server Component can call it directly — importing it from
+// ShippingLabelControl.tsx used to work for JSX purposes only; calling it
+// as a function from a Server Component isn't valid for a "use client"
+// module's export.
+export function isShippingLabelVisible(state: OrderState, hasLabel: boolean): boolean {
+  const ghosted = SHIPPING_LABEL_GHOSTED_STATES.includes(state);
+  if (state !== "awaiting_ship" && !ghosted) return false;
+  if (ghosted && !hasLabel) return false;
+  return true;
+}
+
 // Mirrors apps/api/internal/order.Order exactly. Only exists for a purchase
 // made through the real Connect checkout path (Phase 3 onward) — a mock
 // purchase has no order at all.
@@ -761,10 +956,22 @@ export interface Order {
   state: OrderState;
   rail?: "card" | "ach";
   tierAtSale: string;
+  // The seller's actual commission rate at sale time (e.g. 0.063 for
+  // 6.3%) — a permanent snapshot (design doc v2 §10), never re-derived
+  // from tierAtSale later, since a Haus Trust seller's rate is
+  // individually negotiated and every tier's own rate can change going
+  // forward without rewriting past orders.
+  tierPctAtSale: number;
   subtotalCents: number;
   shippingCents: number;
   sellerFeeCents: number;
   sellerNetCents: number;
+  // Always 0 on the card rail — only ever nonzero for an ACH-rail order,
+  // subtracted from subtotalCents on the buyer's side (never from
+  // sellerNetCents, which never depends on which rail the buyer chose).
+  // Needed so a receipt's "what your buyer paid" line items actually sum
+  // to chargedCents on both rails.
+  discountCents: number;
   taxCents: number;
   chargedCents: number;
   trackingNumber?: string;
@@ -776,9 +983,9 @@ export interface Order {
   createdAt: string;
   // Snapshotted at sale time (apps/api/internal/order.CreateFromWin) —
   // whichever of the listing's chosen preset and the price-driven floor
-  // (internal/shipping.RequiredTier) is stricter. Absent on orders created
-  // before this feature existed.
-  shippingTier?: "standard" | "tracked" | "signature";
+  // (internal/shipping.RequiredMechanism) is stricter. Absent on orders
+  // created before this feature existed.
+  shippingPreset?: ShippingPreset;
   signatureRequired: boolean;
   labelCostCents?: number;
   labelUrl?: string;
@@ -862,7 +1069,7 @@ export async function addOrderEvidence(
   });
 }
 
-// Result of a real EasyPost label purchase — mirrors apps/api/internal/
+// Result of a real Shippo label purchase — mirrors apps/api/internal/
 // shipping's buyLabelResponse exactly.
 export interface ShippingLabel {
   trackingNumber: string;
@@ -872,16 +1079,66 @@ export interface ShippingLabel {
   costCents: number;
 }
 
-// The seller's "buy a shipping label" action — rate-shops and purchases a
-// real EasyPost label at whichever tier the order snapshotted (standard/
-// tracked/signature, see Order.shippingTier), using both parties' saved
+// Hydrates a ShippingLabel straight from whatever's already persisted on an
+// Order (order.labelUrl/trackingNumber/carrier/labelCostCents) — the same
+// shape ShippingLabelControl needs whether it's rendering on the order
+// page, the listing page, or a Transactions row, all fresh page loads with
+// no "just bought it this session" event to react to. Null when no label
+// has ever been purchased for this order.
+export function labelFromOrder(order: Order): ShippingLabel | null {
+  if (!order.labelUrl || !order.trackingNumber || !order.carrier) return null;
+  return {
+    trackingNumber: order.trackingNumber,
+    carrier: order.carrier,
+    service: "",
+    labelUrl: order.labelUrl,
+    costCents: order.labelCostCents ?? 0,
+  };
+}
+
+// The seller's "buy a shipping label" action — dispatches server-side to
+// Shippo or Pitney Bowes depending on whichever preset the order
+// snapshotted (see Order.shippingPreset), using both parties' saved
 // addresses (Account Settings). 400 if either address is missing, 503 if
-// EASYPOST_API_KEY isn't configured on the backend. Only records the
-// result on the order — still requires a follow-up shipOrder call (or the
-// caller can pass the returned carrier/trackingNumber straight through) to
-// actually transition the order to shipped.
+// the vendor that preset needs isn't configured on the backend. Only
+// records the result on the order — still requires a follow-up shipOrder
+// call (or the caller can pass the returned carrier/trackingNumber
+// straight through) to actually transition the order to shipped.
 export async function buyShippingLabel(listingId: string): Promise<ShippingLabel> {
   return apiFetch(`/listings/${listingId}/order/shipping-label`, { method: "POST" });
+}
+
+// Triggers a real file download of the order's already-purchased label PDF
+// — deliberately NOT a plain <a href={label.labelUrl}>: that URL points at
+// Shippo's CDN, a different origin, and browsers silently ignore the
+// `download` attribute on cross-origin links, so a plain link just opens
+// the PDF viewer instead of downloading. Fetching the bytes here (through
+// our own backend's proxy endpoint, which replies with Content-Disposition:
+// attachment) and handing them to the browser as a same-origin blob URL is
+// what actually forces a download.
+export async function downloadShippingLabel(listingId: string): Promise<void> {
+  const supabase = createClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  const res = await fetch(`${API_URL}/listings/${listingId}/order/shipping-label/download`, {
+    headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(text || `Failed to download label: ${res.status}`, res.status);
+  }
+
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = "shipping-label.pdf";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(blobUrl);
 }
 
 // The seller's "mark as shipped" action — rejected (409) until the
@@ -1187,4 +1444,35 @@ export async function uploadPhotoToSession(sessionId: string, file: File): Promi
   if (!res.ok) throw new ApiError(await res.text(), res.status);
   const data = await res.json();
   return data.url;
+}
+
+// --- Seller tier ---
+
+// Mirrors apps/api/internal/seller.MyTierStatus exactly.
+export interface MyTierStatus {
+  tier: SellerTier;
+  tierPct: number;
+  cumulativeOrders: number;
+  disputeRate90d: number;
+  reviewCount: number;
+  averageRating: number;
+}
+
+export async function getMyTier(): Promise<MyTierStatus> {
+  return apiFetch("/me/seller/tier");
+}
+
+// Platinum-only — apps/api/internal/seller.ApplyForHausTrust enforces the
+// real eligibility bar server-side; this just calls it.
+export async function applyForHausTrust(): Promise<{ applicationId: string }> {
+  return apiFetch("/me/seller/haus-trust/apply", { method: "POST" });
+}
+
+// Dev-only — apps/api/internal/seller.DevAdjustTier refuses to run outside
+// development regardless of whether this is called; see DevQuickSwitch.tsx.
+export async function devAdjustTier(direction: "up" | "down"): Promise<{ tier: SellerTier }> {
+  return apiFetch("/me/seller/dev-tier-adjust", {
+    method: "POST",
+    body: JSON.stringify({ direction }),
+  });
 }

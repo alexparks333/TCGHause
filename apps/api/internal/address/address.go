@@ -23,8 +23,12 @@ var (
 	ErrInvalidInput = errors.New("missing required address fields")
 )
 
-// Address is both the domain model and the JSON shape. Line2 and Phone are
-// the only optional fields.
+// Address is both the domain model and the JSON shape. Line2 is the only
+// optional field — Phone was optional originally, but Shippo's label
+// purchase (internal/shipping) rejects any shipment missing a phone number
+// on either address, discovered live once real label purchase went in, so
+// Upsert below now requires it too rather than letting a seller find out
+// only when they try to buy a label.
 type Address struct {
 	FullName   string  `json:"fullName"`
 	Line1      string  `json:"line1"`
@@ -64,7 +68,8 @@ func Upsert(ctx context.Context, pool *pgxpool.Pool, userID string, in Address) 
 		strings.TrimSpace(in.City) == "" ||
 		strings.TrimSpace(in.State) == "" ||
 		strings.TrimSpace(in.PostalCode) == "" ||
-		strings.TrimSpace(in.Country) == "" {
+		strings.TrimSpace(in.Country) == "" ||
+		in.Phone == nil || strings.TrimSpace(*in.Phone) == "" {
 		return nil, ErrInvalidInput
 	}
 

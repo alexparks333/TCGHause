@@ -23,9 +23,12 @@ export const GAMES: Game[] = [
 ];
 
 // Mirrors apps/api/internal/cardcatalog.Card's JSON exactly — a card from
-// TCG Haven's Firestore catalog, read-only, used only for the Sell
-// wizard's autofill (Step1Details). Only Pokémon/Disney Lorcana/Riftbound
-// have any results; GET /catalog/search returns [] for the other games.
+// TCG Haven's Firestore catalog, read-only. Used by the Sell wizard's
+// autofill (Step1Details, always called with a game already chosen) and
+// the Favorite Card widget picker (ProfileEditor, searches every game at
+// once via searchCatalogCardsAllGames — see `game` below). Only Pokémon/
+// Disney Lorcana/Riftbound have any results; GET /catalog/search returns
+// [] for the other games.
 export interface CatalogCard {
   id: string;
   name: string;
@@ -33,10 +36,26 @@ export interface CatalogCard {
   setName: string;
   number: string;
   rarity: string;
+  // The AuctionHous game this result came from ("Pokémon", not TCG
+  // Haven's "pokemon" slug) — always populated by the API now, but only
+  // load-bearing for the all-games picker, which has no other way to know
+  // which game a given result belongs to.
+  game: string;
   imageUrl: string;
   tags: string[] | null;
   hidden: boolean;
 }
+
+// Mirrors apps/api/internal/shipping.Preset's five values exactly. Each is
+// locked to one fulfillment mechanism (free_envelope/tracked_envelope ->
+// Pitney Bowes; everything else -> Shippo) — see that package's doc
+// comment for the full policy.
+export type ShippingPreset =
+  | "free_envelope"
+  | "free_bubble_mailer"
+  | "free_box"
+  | "tracked_envelope"
+  | "shippo_ground_advantage";
 
 export interface Listing {
   id: string;
@@ -47,7 +66,10 @@ export interface Listing {
   sellerRatingAvg: number;
   sellerReviewCount: number;
   // Design doc v2 §3's trust tier — mirrors apps/api/internal/seller.Tier.
-  sellerTier: "new" | "bronze" | "silver" | "gold" | "haus_trust";
+  // Platinum sits between Gold and Haus Trust; Haus Trust is the top tier,
+  // application-only, with an individually negotiated rate (see
+  // sellerTierRate below).
+  sellerTier: "new" | "bronze" | "silver" | "gold" | "platinum" | "haus_trust";
   title: string;
   game: Game;
   set: string;
@@ -60,12 +82,16 @@ export interface Listing {
   certNumber?: string;
   format: "auction" | "fixed";
   priceCents?: number;
-  freeShipping: boolean;
-  shippingCostCents: number;
-  // The seller's chosen preset at listing time (Sell wizard's Step3Price) —
-  // a floor only; the actual order may ship stricter, see
-  // Order.shippingTier's doc comment in lib/api.ts.
-  shippingTier: "standard" | "tracked" | "signature";
+  // The seller's chosen shipping method at listing time (Sell wizard's
+  // Step3Price) — a floor only; a low-starting-bid auction may resolve
+  // stricter at sale time, see Order.shippingPreset's doc comment in
+  // lib/api.ts. No separate freeShipping/shippingCostCents anymore —
+  // free-ness and packaging are both encoded in the preset value itself.
+  shippingPreset: ShippingPreset;
+  // Only ever set for the shippo_ground_advantage preset — a one-time
+  // estimate computed when the listing was created (a real buyer address
+  // isn't known yet, so this is never the guaranteed final cost).
+  estimatedShippingCents?: number;
   imageUrls: string[];
   watcherCount: number;
   status: string;
@@ -227,6 +253,67 @@ export function formatPrice(cents: number): string {
   });
 }
 
+// Mirrors apps/api/internal/shipping.TrackedEnvelopeCents exactly — the
+// flat buyer-facing price for the tracked_envelope preset.
+export const TRACKED_ENVELOPE_CENTS = 151;
+
+// The one "how does this ship, and what does it cost" line, shared by
+// every place a listing renders shipping info (ListingCard, ListingRow,
+// the listing detail page, checkout) — previously each of those
+// duplicated a freeShipping/shippingCostCents ternary; now it's all
+// derived from the single shippingPreset value.
+export function shippingDisplayText(listing: Listing): string {
+  switch (listing.shippingPreset) {
+    case "free_envelope":
+    case "free_bubble_mailer":
+    case "free_box":
+      return "Free shipping";
+    case "tracked_envelope":
+      return `+${formatPrice(TRACKED_ENVELOPE_CENTS)} shipping`;
+    case "shippo_ground_advantage":
+      return listing.estimatedShippingCents != null
+        ? `~${formatPrice(listing.estimatedShippingCents)} shipping (est.)`
+        : "Shipping calculated at checkout";
+    default:
+      return "Shipping calculated at checkout";
+  }
+}
+
+// The listing detail page's fuller "what you'll actually get" line —
+// cost and packaging shown as two distinct parts (e.g. "Free Shipping"
+// + "Bubble Mailer", "$1.51" + "Tracked Envelope") rather than
+// shippingDisplayText's single compact sentence used on cards/rows/
+// checkout, since a buyer deciding whether to bid/buy benefits from
+// knowing the actual mechanism, not just the price.
+const SHIPPING_METHOD_LABELS: Record<ShippingPreset, string> = {
+  free_envelope: "Envelope",
+  free_bubble_mailer: "Bubble Mailer",
+  free_box: "Box",
+  tracked_envelope: "Tracked Envelope",
+  shippo_ground_advantage: "Ground Advantage (Tracked Package)",
+};
+
+export function shippingMethodLabel(listing: Listing): string {
+  return SHIPPING_METHOD_LABELS[listing.shippingPreset];
+}
+
+export function shippingCostLabel(listing: Listing): string {
+  switch (listing.shippingPreset) {
+    case "free_envelope":
+    case "free_bubble_mailer":
+    case "free_box":
+      return "Free Shipping";
+    case "tracked_envelope":
+      return `+${formatPrice(TRACKED_ENVELOPE_CENTS)} shipping`;
+    case "shippo_ground_advantage":
+      return listing.estimatedShippingCents != null
+        ? `~${formatPrice(listing.estimatedShippingCents)} shipping`
+        : "Shipping cost at checkout";
+    default:
+      return "Shipping cost at checkout";
+  }
+}
+
 // Display label for a seller trust tier (design doc v2 §3.1) — "New"
 // deliberately isn't hidden or softened just because it's the entry tier;
 // the whole ladder is meant to be visible, not just the tiers worth
@@ -235,6 +322,8 @@ export function formatSellerTier(tier: Listing["sellerTier"]): string {
   switch (tier) {
     case "haus_trust":
       return "Haus Trusted Seller";
+    case "platinum":
+      return "Platinum Seller";
     case "gold":
       return "Gold Seller";
     case "silver":
@@ -246,9 +335,9 @@ export function formatSellerTier(tier: Listing["sellerTier"]): string {
   }
 }
 
-// The engraved-card tier badge art (public/tiers/*.png) — null for "new",
-// since there's no art for the entry tier yet; callers fall back to a
-// plain icon (e.g. lucide's ShieldCheck) in that case rather than render
+// The engraved-card tier badge art (public/tiers/*.png) — null for "new"
+// and "platinum" (no platinum art commissioned yet), callers fall back to
+// a plain icon (e.g. lucide's ShieldCheck) in that case rather than render
 // nothing.
 export function sellerTierIconSrc(tier: Listing["sellerTier"]): string | null {
   switch (tier) {
@@ -266,13 +355,16 @@ export function sellerTierIconSrc(tier: Listing["sellerTier"]): string | null {
 }
 
 // Each tier's identity color, matching its card icon's metal tone (bronze
-// copper, silver, gold, Haus Trust's ice blue) — tuned for use on a dark
-// navy background (TopBar/Hero), not for light surfaces like SellerCard's
-// white background, where the plain gray badge text stays as-is.
+// copper, silver, gold, platinum's pale steel, Haus Trust's ice blue) —
+// tuned for use on a dark navy background (TopBar/Hero), not for light
+// surfaces like SellerCard's white background, where the plain gray badge
+// text stays as-is.
 export function sellerTierAccentColorClass(tier: Listing["sellerTier"]): string {
   switch (tier) {
     case "haus_trust":
       return "text-[#8ec5ff]";
+    case "platinum":
+      return "text-[#e5e4e2]";
     case "gold":
       return "text-brand-gold-light";
     case "silver":
@@ -284,11 +376,64 @@ export function sellerTierAccentColorClass(tier: Listing["sellerTier"]): string 
   }
 }
 
+// The stickers offered on the profile canvas's Background layer
+// (StickerBoard.tsx) — exactly the tier icon art that already exists
+// (sellerTierIconSrc above); "new" and "platinum" have no commissioned art
+// yet, so they're not offered here either. Mirrors
+// apps/api/internal/user.validStickerKinds exactly — keep both lists in
+// sync if a new sticker is ever added. This is also the one indirection
+// point an animated sticker later hooks into: a GIF/WebP/APNG `src` here
+// just animates in the existing <img>, no placement-data or component
+// change needed (see the profile-canvas plan's forward-compat notes).
+export const PROFILE_STICKER_OPTIONS: { kind: string; label: string; src: string }[] = [
+  { kind: "bronze", label: "Bronze Tier", src: "/tiers/bronze.png" },
+  { kind: "silver", label: "Silver Tier", src: "/tiers/silver.png" },
+  { kind: "gold", label: "Gold Tier", src: "/tiers/gold.png" },
+  { kind: "haus_trust", label: "Haus Trust", src: "/tiers/haus.png" },
+];
+
+export function profileStickerSrc(kind: string): string | undefined {
+  return PROFILE_STICKER_OPTIONS.find((s) => s.kind === kind)?.src;
+}
+
+// The content widgets offered on the profile canvas's Widgets tab
+// (ProfileEditorPalette.tsx) — mirrors
+// apps/api/internal/user.validWidgetTypes exactly. Data-driven on purpose:
+// a new widget type later (a Showcase, achievements/badges, ...) is an
+// additional entry plus one renderer in ProfileEditor.tsx, not a rewrite
+// of the palette or the drag-to-reorder list.
+export const WIDGET_CATALOG: { type: string; label: string; description: string }[] = [
+  {
+    type: "listings",
+    label: "Listings",
+    description: "A scrollable row of your active listings.",
+  },
+  {
+    type: "favorite_card",
+    label: "Favorite Card",
+    description: "Showcase any card from our catalog as its own art piece.",
+  },
+  {
+    type: "empty_space",
+    label: "Empty Space",
+    description: "A blank 1x1 spacer to leave breathing room in the layout.",
+  },
+];
+
+// Mirrors apps/api/internal/user.maxWidgets exactly.
+export const MAX_WIDGETS = 6;
+
 // Commission rate for a seller trust tier — mirrors
-// apps/api/internal/seller.tierPct exactly (design doc v2 §3.1).
+// apps/api/internal/seller.tierPct exactly (design doc v2 §3.1). Haus
+// Trust deliberately has no fixed rate to show here — it's negotiated per
+// seller at application approval (apps/api/internal/seller/haustrust.go),
+// so "Custom" is the honest answer, not a specific number this function
+// could get wrong the moment two Haus Trust sellers have different rates.
 export function sellerTierRate(tier: Listing["sellerTier"]): string {
   switch (tier) {
     case "haus_trust":
+      return "Custom";
+    case "platinum":
       return "5.50%";
     case "gold":
       return "6.00%";

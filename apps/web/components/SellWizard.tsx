@@ -8,6 +8,7 @@ import Step1Details from "./sell-wizard/Step1Details";
 import Step2Photos from "./sell-wizard/Step2Photos";
 import Step3Price from "./sell-wizard/Step3Price";
 import { apiFetch } from "@/lib/api";
+import type { ShippingPreset } from "@/lib/types";
 
 export interface WizardData {
   title: string;
@@ -39,15 +40,15 @@ export interface WizardData {
   // their own `price` field is the BIN price.
   buyItNowEnabled: boolean;
   buyItNowPrice: string;
-  freeShipping: boolean;
-  shippingCost: string;
-  // ShippingTier is the seller's chosen preset (see Step3Price's picker) —
-  // a floor, not a guarantee: the backend re-derives the required tier from
-  // the actual final sale price at order time and ships at whichever is
-  // stricter (docs/Shipping_Research.md's synthesis, internal/shipping.Max)
-  // — a low-starting-bid auction that closes above $500 always ships
-  // signature-tier regardless of what's picked here.
-  shippingTier: "standard" | "tracked" | "signature";
+  // ShippingPreset is the seller's chosen shipping method (see
+  // Step3Price's picker) — a floor, not a guarantee: the backend
+  // re-derives the required mechanism from the actual final sale price at
+  // order time and ships at whichever is stricter
+  // (internal/shipping.UpgradePreset) — a low-starting-bid auction that
+  // closes above $100 always ships via a tracked package regardless of
+  // what's picked here. The three free_* presets are only valid on
+  // fixed-price listings under $100 — Step3Price hides them otherwise.
+  shippingPreset: ShippingPreset;
 }
 
 export type UpdateField = <K extends keyof WizardData>(key: K, value: WizardData[K]) => void;
@@ -70,9 +71,7 @@ const INITIAL: WizardData = {
   durationMinutes: 7 * 24 * 60,
   buyItNowEnabled: false,
   buyItNowPrice: "",
-  freeShipping: true,
-  shippingCost: "",
-  shippingTier: "standard",
+  shippingPreset: "tracked_envelope",
 };
 
 function dollarsToCents(value: string): number {
@@ -96,6 +95,20 @@ export default function SellWizard() {
       dollarsToCents(data.buyItNowPrice) <= dollarsToCents(data.startingBid)
     ) {
       setError("Buy It Now price must be higher than the starting bid.");
+      return;
+    }
+
+    // Mirrors apps/api/internal/listing.Create's own validation — checked
+    // here too so the seller sees this before submitting, not just as a
+    // server error after the fact. The server re-checks regardless; this
+    // is a UX nicety, not the actual enforcement. Only a known (fixed)
+    // price that's already too high for envelope shipping is rejected
+    // here — an auction's final price isn't known yet, so both
+    // free_envelope and tracked_envelope stay valid there (the backend
+    // resolves the real mechanism at sale time).
+    const isLetterMechanism = data.shippingPreset === "free_envelope" || data.shippingPreset === "tracked_envelope";
+    if (isLetterMechanism && data.format === "fixed" && dollarsToCents(data.price) >= 10000) {
+      setError("Envelope shipping isn't available on listings priced at $100 or more.");
       return;
     }
 
@@ -124,9 +137,7 @@ export default function SellWizard() {
             data.format === "auction" && data.buyItNowEnabled
               ? dollarsToCents(data.buyItNowPrice)
               : 0,
-          freeShipping: data.freeShipping,
-          shippingCostCents: data.freeShipping ? 0 : dollarsToCents(data.shippingCost),
-          shippingTier: data.shippingTier,
+          shippingPreset: data.shippingPreset,
           imageUrls: data.photos,
         }),
       });
