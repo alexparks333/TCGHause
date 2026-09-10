@@ -58,6 +58,7 @@ export default function ProfileEditorPalette({
   listings,
   watchedIds,
   isLoggedIn,
+  currentUserId,
   dirty,
   saving,
   error,
@@ -77,6 +78,11 @@ export default function ProfileEditorPalette({
   listings: Listing[];
   watchedIds: Set<string>;
   isLoggedIn: boolean;
+  // Only ever rendered while editable (isOwner && editMode — see
+  // ProfileEditor), so listings here are always the viewer's own; threaded
+  // through so the live-preview chip below doesn't show Buy It Now/Make an
+  // Offer on the owner's own listings.
+  currentUserId?: string;
   dirty: boolean;
   saving: boolean;
   error: string;
@@ -201,6 +207,7 @@ export default function ProfileEditorPalette({
                     listings={listings}
                     watchedIds={watchedIds}
                     isLoggedIn={isLoggedIn}
+                    currentUserId={currentUserId}
                     disabled={atWidgetCap}
                   />
                 ) : (
@@ -388,11 +395,13 @@ function ListingsWidgetChip({
   listings,
   watchedIds,
   isLoggedIn,
+  currentUserId,
   disabled,
 }: {
   listings: Listing[];
   watchedIds: Set<string>;
   isLoggedIn: boolean;
+  currentUserId?: string;
   disabled?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -418,7 +427,12 @@ function ListingsWidgetChip({
             className="pointer-events-none origin-top-left"
             style={{ width: PREVIEW_VIRTUAL_WIDTH, transform: `scale(${PREVIEW_SCALE})` }}
           >
-            <ListingsWidget listings={listings} watchedIds={watchedIds} isLoggedIn={isLoggedIn} />
+            <ListingsWidget
+              listings={listings}
+              watchedIds={watchedIds}
+              isLoggedIn={isLoggedIn}
+              currentUserId={currentUserId}
+            />
           </div>
         </div>
       }

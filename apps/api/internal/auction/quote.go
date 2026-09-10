@@ -34,10 +34,10 @@ func noTax(_ money.Cents, _ fees.Address) (money.Cents, error) {
 // the fee math, it doesn't know anything about presets itself.
 //
 // Returns the percentage actually used alongside the quote/tier —
-// seller.PctForSeller (not PctForTier) is what resolves a Haus Trust
+// seller.PctForSeller (not PctForTier) is what resolves a Hous Trust
 // seller's individually negotiated rate, so callers must use the returned
 // pct for anything downstream (e.g. order.CreateInput.TierPct) rather than
-// re-deriving it from tier alone, or a Haus Trust order would get priced
+// re-deriving it from tier alone, or a Hous Trust order would get priced
 // against a shared constant nobody actually agreed to.
 func quoteForListing(ctx context.Context, pool *pgxpool.Pool, sellerID string, subtotalCents, shippingCents int64) (fees.Quote, seller.Tier, float64, error) {
 	tier, err := seller.CurrentTier(ctx, pool, sellerID)

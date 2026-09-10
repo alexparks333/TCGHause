@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import DevQuickSwitch from "@/components/DevQuickSwitch";
 import CelebrationWatcher from "@/components/CelebrationWatcher";
+import MessageBubbleWatcher from "@/components/MessageBubbleWatcher";
 import { getCurrentSession } from "@/lib/session";
 import "./globals.css";
 
@@ -38,17 +39,19 @@ export default async function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full scroll-smooth antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <CelebrationWatcher>{children}</CelebrationWatcher>
-        {isDev && (
-          <DevQuickSwitch
-            currentEmail={user?.email ?? null}
-            accountEmails={{
-              seller: process.env.DEV_ACCOUNT_SELLER_EMAIL ?? null,
-              bidderA: process.env.DEV_ACCOUNT_BIDDER_A_EMAIL ?? null,
-              bidderB: process.env.DEV_ACCOUNT_BIDDER_B_EMAIL ?? null,
-            }}
-          />
-        )}
+        <MessageBubbleWatcher>
+          <CelebrationWatcher>{children}</CelebrationWatcher>
+          {isDev && (
+            <DevQuickSwitch
+              currentEmail={user?.email ?? null}
+              accountEmails={{
+                seller: process.env.DEV_ACCOUNT_SELLER_EMAIL ?? null,
+                bidderA: process.env.DEV_ACCOUNT_BIDDER_A_EMAIL ?? null,
+                bidderB: process.env.DEV_ACCOUNT_BIDDER_B_EMAIL ?? null,
+              }}
+            />
+          )}
+        </MessageBubbleWatcher>
       </body>
     </html>
   );

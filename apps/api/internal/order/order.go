@@ -43,7 +43,7 @@ var transitions = map[State]map[State]string{
 	StatePaid:           {StateAwaitingShip: "auto"},
 	StateAwaitingShip:   {StateShipped: "tracking_uploaded", StateCancelled: "ship_timeout_72h"},
 	StateShipped:        {StateDelivered: "carrier_delivered", StateRefunded: "no_delivery_scan_21d"},
-	// trusted_release (design doc v2 §6.4): Gold/Haus Trust sellers skip
+	// trusted_release (design doc v2 §6.4): Gold/Hous Trust sellers skip
 	// the claim window entirely, releasing on the delivery scan itself —
 	// MarkDelivered (fulfillment.go) decides which edge applies per order.
 	StateDelivered:   {StateClaimWindow: "auto", StateReleased: "trusted_release"},
@@ -127,6 +127,11 @@ type CreateInput struct {
 // exactly one Order through this one function, rather than each
 // maintaining its own parallel notion of "what got sold."
 //
+// Also the row a won-via-bidding auction gets the instant it closes with a
+// winner (internal/auction/close.go's createPendingOrderForWin) — Rail is
+// unknown at that point (nil until FinalizePayment below attaches it), the
+// only caller that ever passes an empty Rail.
+//
 // Called as a small, separately-committed step right after the atomic
 // ownership compare-and-swap succeeds — not nested inside that transaction.
 // This mirrors the existing convention in internal/auction/buynow.go
@@ -176,7 +181,7 @@ func CreateFromWin(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, 
 			$18, $19
 		) returning id
 	`,
-		buyerID, sellerID, string(StateCreated), string(in.Rail), in.Tier, in.TierPct,
+		buyerID, sellerID, string(StateCreated), nullableString(string(in.Rail)), in.Tier, in.TierPct,
 		int64(q.Subtotal), int64(q.Shipping), feeBase, int64(q.SellerFee),
 		int64(q.SellerNet), discountCents, taxCents, chargedCents,
 		processingCostCents, nullableString(in.StripePaymentIntentID), nullableString(in.StripeChargeID),
@@ -193,6 +198,61 @@ func CreateFromWin(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, 
 	}
 
 	return orderID, nil
+}
+
+// FinalizePayment attaches real payment details to an order that was
+// already inserted, unpaid, at auction-close time (CreateFromWin, called
+// from internal/auction/close.go with Rail empty) and moves it straight
+// from created to paid or payment_pending in the same statement — the
+// compare-and-swap on state = 'created' is what makes this safe against
+// ever double-finalizing the same order (a buyer double-clicking Pay, a
+// retry after a slow response), same "exactly one writer wins" property as
+// Transition itself, just folded into one update since the fee fields and
+// the state need to change together atomically. Callers still need a
+// separate Transition(StatePaid, StateAwaitingShip) afterward for the card
+// rail — this only ever lands on paid/payment_pending, never further.
+func FinalizePayment(ctx context.Context, pool *pgxpool.Pool, orderID string, in CreateInput) error {
+	newState := StatePaid
+	if in.Rail == RailAch {
+		newState = StatePaymentPending
+	}
+
+	q := in.Quote
+	feeBase := int64(q.Subtotal) + int64(q.Shipping)
+	discountCents := int64(0)
+	taxCents := int64(q.CardTax)
+	chargedCents := int64(q.CardTotal)
+	processingCostCents := int64(q.CardCost)
+	if in.Rail == RailAch {
+		discountCents = int64(q.Discount)
+		taxCents = int64(q.BankTax)
+		chargedCents = int64(q.BankTotal)
+		processingCostCents = int64(q.BankCost)
+	}
+
+	tag, err := pool.Exec(ctx, `
+		update orders set
+			state = $1, rail = $2, tier_at_sale = $3, tier_pct_at_sale = $4,
+			subtotal_cents = $5, shipping_cents = $6, fee_base_cents = $7,
+			seller_fee_cents = $8, seller_net_cents = $9, discount_cents = $10,
+			tax_cents = $11, charged_cents = $12, processing_cost_cents = $13,
+			stripe_payment_intent_id = $14, stripe_charge_id = $15,
+			shipping_preset = $16, signature_required = $17, updated_at = now()
+		where id = $18 and state = $19
+	`,
+		string(newState), nullableString(string(in.Rail)), in.Tier, in.TierPct,
+		int64(q.Subtotal), int64(q.Shipping), feeBase, int64(q.SellerFee),
+		int64(q.SellerNet), discountCents, taxCents, chargedCents,
+		processingCostCents, nullableString(in.StripePaymentIntentID), nullableString(in.StripeChargeID),
+		in.ShippingPreset, in.SignatureRequired, orderID, string(StateCreated),
+	)
+	if err != nil {
+		return fmt.Errorf("finalize payment: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInvalidTransition
+	}
+	return nil
 }
 
 func nullableString(s string) *string {

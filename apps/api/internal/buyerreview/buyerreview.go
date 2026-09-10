@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"auctionhous-tcg/api/internal/notification"
 )
 
 var (
@@ -137,8 +139,14 @@ func Upsert(ctx context.Context, pool *pgxpool.Pool, orderID, sellerID, buyerID 
 		commentArg = &comment
 	}
 
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	var id string
-	err = pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		insert into buyer_reviews (order_id, buyer_id, reviewer_id, rating, tag, comment)
 		values ($1, $2, $3, $4, $5, $6)
 		on conflict (order_id)
@@ -148,7 +156,82 @@ func Upsert(ctx context.Context, pool *pgxpool.Pool, orderID, sellerID, buyerID 
 	if err != nil {
 		return nil, fmt.Errorf("upsert buyer review: %w", err)
 	}
+
+	// order_items.listing_id is what notification.Create's FK needs — a
+	// buyer review is naturally keyed by order (see the type comment
+	// above), but the notifications table (shared with won/sold/outbid)
+	// only ever points at a listing.
+	var listingID string
+	if err := tx.QueryRow(ctx, `select listing_id from order_items where order_id = $1`, orderID).Scan(&listingID); err != nil {
+		return nil, fmt.Errorf("look up order's listing: %w", err)
+	}
+	if err := notification.Create(ctx, tx, buyerID, notification.KindBuyerReviewReceived, listingID); err != nil {
+		return nil, fmt.Errorf("notify buyer of review: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
 	return getReview(ctx, pool, id)
+}
+
+// PendingReviewCelebration is one review a recipient hasn't been shown a
+// CelebrationToast pop-up for yet — the buyer-review side of
+// auction.CelebrationItem, assembled into that shared shape by
+// auction.PendingCelebrations rather than duplicated here. Structurally
+// identical to feedback.PendingReviewCelebration; kept as its own local
+// type rather than a shared import since the two packages otherwise have
+// no reason to depend on each other.
+type PendingReviewCelebration struct {
+	ListingID string
+	Title     string
+	ImageURLs []string
+	Rating    float64
+}
+
+// PendingBuyerReviewCelebrations returns every review of buyerID (as a
+// buyer) that hasn't been celebrated yet, oldest first.
+func PendingBuyerReviewCelebrations(ctx context.Context, pool *pgxpool.Pool, buyerID string) ([]PendingReviewCelebration, error) {
+	rows, err := pool.Query(ctx, `
+		select l.id, l.title, l.image_urls, r.rating
+		from buyer_reviews r
+		join order_items oi on oi.order_id = r.order_id
+		join listings l on l.id = oi.listing_id
+		where r.buyer_id = $1 and r.celebrated_at is null
+		order by r.created_at asc
+	`, buyerID)
+	if err != nil {
+		return nil, fmt.Errorf("query pending review celebrations: %w", err)
+	}
+	defer rows.Close()
+
+	out := []PendingReviewCelebration{}
+	for rows.Next() {
+		var item PendingReviewCelebration
+		if err := rows.Scan(&item.ListingID, &item.Title, &item.ImageURLs, &item.Rating); err != nil {
+			return nil, fmt.Errorf("scan pending review celebration: %w", err)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// AckBuyerReviewCelebration marks listingID's buyer review as shown to
+// buyerID, so PendingBuyerReviewCelebrations never returns it again. Goes
+// through order_items (buyer_reviews has no listing_id column of its own —
+// see the Review type comment) rather than orderID directly, since the
+// caller only ever has the listingId a CelebrationItem carries, same as
+// every other celebration ack in this codebase.
+func AckBuyerReviewCelebration(ctx context.Context, pool *pgxpool.Pool, buyerID, listingID string) error {
+	if _, err := pool.Exec(ctx, `
+		update buyer_reviews r set celebrated_at = now()
+		from order_items oi
+		where oi.order_id = r.order_id and oi.listing_id = $1
+			and r.buyer_id = $2 and r.celebrated_at is null
+	`, listingID, buyerID); err != nil {
+		return fmt.Errorf("ack buyer review celebration: %w", err)
+	}
+	return nil
 }
 
 func getReview(ctx context.Context, pool *pgxpool.Pool, id string) (*Review, error) {

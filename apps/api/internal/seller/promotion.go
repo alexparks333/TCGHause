@@ -11,9 +11,9 @@ import (
 // tierThreshold is design doc v2 §3.1/§3.2's cumulative-completed-order
 // thresholds. No entry for TierNew — every seller starts there, so its
 // implicit zero-value threshold (0) is correct as-is: tierForOrders below
-// relies on that. **No entry for TierHausTrust, deliberately** — Haus Trust
+// relies on that. **No entry for TierHousTrust, deliberately** — Hous Trust
 // is never reached by order volume alone, only through the manual
-// application process (haustrust.go); see volumeTierOrder below for why
+// application process (houstrust.go); see volumeTierOrder below for why
 // that's actually enforced, not just a documentation note.
 var tierThreshold = map[Tier]int{
 	TierBronze:   15,
@@ -22,22 +22,22 @@ var tierThreshold = map[Tier]int{
 	TierPlatinum: 500,
 }
 
-// tierOrder is the FULL ladder in ascending order, Haus Trust included —
+// tierOrder is the FULL ladder in ascending order, Hous Trust included —
 // used to step exactly one tier at a time on demotion (design doc v2 §3.5
 // is explicit: drop ONE tier, never straight to New regardless of how bad
 // the dispute rate is) and to find "one tier below current" generically. A
-// Haus Trust seller who gets demoted correctly drops to Platinum through
+// Hous Trust seller who gets demoted correctly drops to Platinum through
 // this list, even though nothing in this file can ever promote a seller
-// INTO Haus Trust — demotion and promotion are allowed to use different
+// INTO Hous Trust — demotion and promotion are allowed to use different
 // tier sets for exactly that reason.
-var tierOrder = []Tier{TierNew, TierBronze, TierSilver, TierGold, TierPlatinum, TierHausTrust}
+var tierOrder = []Tier{TierNew, TierBronze, TierSilver, TierGold, TierPlatinum, TierHousTrust}
 
 // volumeTierOrder is every tier tierForOrders is allowed to land on —
-// everything EXCEPT Haus Trust. This is what actually enforces "Haus Trust
+// everything EXCEPT Hous Trust. This is what actually enforces "Hous Trust
 // is application-only," not just tierThreshold having no entry for it: if
-// tierForOrders looped over the full tierOrder instead, TierHausTrust's
+// tierForOrders looped over the full tierOrder instead, TierHousTrust's
 // missing map entry would default to a threshold of 0, and since every
-// order count is >= 0, every seller would "qualify" for Haus Trust on the
+// order count is >= 0, every seller would "qualify" for Hous Trust on the
 // very first order. Using a separate, shorter slice here is the actual
 // safety mechanism, not a cosmetic one.
 var volumeTierOrder = []Tier{TierNew, TierBronze, TierSilver, TierGold, TierPlatinum}
@@ -56,7 +56,7 @@ func tierIndex(t Tier) int {
 // straight to the highest qualifying tier in one recompute, e.g. after the
 // worker was down for a while, since design doc v2 doesn't require
 // promotion to step one tier at a time the way demotion explicitly does.
-// Can never return TierHausTrust — see volumeTierOrder's doc comment.
+// Can never return TierHousTrust — see volumeTierOrder's doc comment.
 func tierForOrders(n int) Tier {
 	t := TierNew
 	for _, candidate := range volumeTierOrder {
@@ -94,10 +94,10 @@ const (
 // pass (tierForOrders' own doc comment) must clear THAT tier's bar, not an
 // earlier rung's — see gatesPass.
 //
-// TierHausTrust entries ARE present here even though gatesPass (the
+// TierHousTrust entries ARE present here even though gatesPass (the
 // auto-promotion path) can never actually be called with target ==
-// TierHausTrust (tierForOrders never returns it — see volumeTierOrder).
-// They're the eligibility bar haustrust.go's ApplyForHausTrust checks
+// TierHousTrust (tierForOrders never returns it — see volumeTierOrder).
+// They're the eligibility bar houstrust.go's ApplyForHousTrust checks
 // instead — same numbers, same map, different caller, so the bar for
 // "eligible to apply" and "would auto-promote if this were reachable by
 // volume" can never quietly drift apart into two different numbers.
@@ -106,7 +106,7 @@ var minReviewsForTier = map[Tier]int{
 	TierSilver:    15,
 	TierGold:      40,
 	TierPlatinum:  100,
-	TierHausTrust: 500,
+	TierHousTrust: 500,
 }
 
 var minAverageRatingForTier = map[Tier]float64{
@@ -114,7 +114,7 @@ var minAverageRatingForTier = map[Tier]float64{
 	TierSilver:    4.3,
 	TierGold:      4.5,
 	TierPlatinum:  4.5,
-	TierHausTrust: 4.5,
+	TierHousTrust: 4.5,
 }
 
 // standing is one seller's computed inputs for a promotion/demotion
@@ -214,7 +214,7 @@ func decideTier(s standing) (Tier, string) {
 // together, not any one axis alone — queried directly here rather than
 // importing internal/feedback, since this is a two-column aggregate, not
 // any of that package's actual review-CRUD logic. Shared by loadStanding
-// (the auto-promotion gate) and haustrust.go's ApplyForHausTrust (the
+// (the auto-promotion gate) and houstrust.go's ApplyForHousTrust (the
 // application-eligibility check), so both read the exact same numbers —
 // see minReviewsForTier's doc comment for why that matters.
 // coalesce(..., 0) on the average matters only cosmetically (a zero-review
@@ -344,16 +344,16 @@ func RecomputeTier(ctx context.Context, pool *pgxpool.Pool, sellerID string) (Ti
 		return "", false, fmt.Errorf("update seller tier: %w", err)
 	}
 
-	// A seller demoted out of Haus Trust loses their negotiated rate —
-	// it was granted for that tier specifically (haustrust.go's
+	// A seller demoted out of Hous Trust loses their negotiated rate —
+	// it was granted for that tier specifically (houstrust.go's
 	// application process), and letting it silently persist on a
 	// now-Platinum seller would mean PctForSeller keeps charging a
-	// Haus-Trust-only rate to someone no longer in that tier. If they're
-	// re-approved for Haus Trust later, a fresh application grants a fresh
+	// Hous-Trust-only rate to someone no longer in that tier. If they're
+	// re-approved for Hous Trust later, a fresh application grants a fresh
 	// rate — never reuse a stale one.
-	if s.currentTier == TierHausTrust && newTier != TierHausTrust {
-		if _, err := pool.Exec(ctx, `update users set haus_trust_custom_pct = null where id = $1`, sellerID); err != nil {
-			return "", false, fmt.Errorf("clear haus trust custom pct: %w", err)
+	if s.currentTier == TierHousTrust && newTier != TierHousTrust {
+		if _, err := pool.Exec(ctx, `update users set hous_trust_custom_pct = null where id = $1`, sellerID); err != nil {
+			return "", false, fmt.Errorf("clear hous trust custom pct: %w", err)
 		}
 	}
 

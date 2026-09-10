@@ -17,6 +17,7 @@ type AdminClaimSummary struct {
 	Claim
 	OrderState     string `json:"orderState"`
 	ChargedCents   int64  `json:"chargedCents"`
+	ListingID      string `json:"listingId"`
 	ListingTitle   string `json:"listingTitle"`
 	BuyerUsername  string `json:"buyerUsername"`
 	SellerUsername string `json:"sellerUsername"`
@@ -25,7 +26,7 @@ type AdminClaimSummary struct {
 const adminClaimSelect = `
 	select c.id, c.ticket_no, c.order_id, c.opened_by, c.reason_code, c.state, c.resolution, c.refund_cents,
 		c.liable_party, c.reviewer_id, c.created_at, c.resolved_at,
-		o.state, o.charged_cents, l.title, bu.username, su.username
+		o.state, o.charged_cents, l.id, l.title, bu.username, su.username
 	from claims c
 	join orders o on o.id = c.order_id
 	join order_items oi on oi.order_id = o.id
@@ -41,7 +42,7 @@ func scanAdminClaimSummary(row pgx.Row) (*AdminClaimSummary, error) {
 	if err := row.Scan(
 		&c.ID, &c.TicketNo, &c.OrderID, &c.OpenedBy, &c.ReasonCode, &c.State, &c.Resolution, &c.RefundCents,
 		&c.LiableParty, &c.ReviewerID, &c.CreatedAt, &c.ResolvedAt,
-		&s.OrderState, &s.ChargedCents, &s.ListingTitle, &buyerUsername, &sellerUsername,
+		&s.OrderState, &s.ChargedCents, &s.ListingID, &s.ListingTitle, &buyerUsername, &sellerUsername,
 	); err != nil {
 		return nil, fmt.Errorf("scan admin claim summary: %w", err)
 	}

@@ -13,7 +13,7 @@ import {
   type ShippingLabel,
 } from "@/lib/api";
 import { uploadOrderEvidence } from "@/lib/storage";
-import { ORDER_STEPS, ORDER_OFF_PATH_LABELS } from "@/lib/orderSteps";
+import { ORDER_STEPS, ORDER_OFF_PATH_LABELS, stepIndexForState } from "@/lib/orderSteps";
 import ShippingLabelControl, { isShippingLabelVisible } from "./ShippingLabelControl";
 
 // The real state-machine-driven order-status view (design doc v2 §5) —
@@ -58,6 +58,11 @@ export default function OrderStatusPanel({
           {order.carrier} tracking: <span className="font-medium">{order.trackingNumber}</span>
         </p>
       )}
+      {order.trackingNumber && order.signatureRequired && (
+        <p className="mt-1 text-xs text-gray-500">
+          Signature required at delivery — someone will need to be present to sign for it.
+        </p>
+      )}
       {order.state === "claim_window" && order.claimDeadline && (
         <p className="mt-2 text-xs text-gray-500">
           Funds release to the seller on{" "}
@@ -75,6 +80,7 @@ export default function OrderStatusPanel({
             listingId={order.listingId}
             initialLabel={labelFromOrder(order)}
             shippingPreset={order.shippingPreset}
+            signatureRequired={order.signatureRequired}
             state={order.state}
             onLabelChanged={handleLabelChanged}
           />
@@ -97,7 +103,7 @@ function Timeline({ state }: { state: OrderState }) {
     return <p className="text-sm font-semibold text-brand-urgent">{offPath}</p>;
   }
 
-  const currentIndex = ORDER_STEPS.findIndex((s) => s.state === state);
+  const currentIndex = stepIndexForState(state);
   return (
     <ol className="flex flex-wrap items-center gap-x-2 gap-y-3">
       {ORDER_STEPS.map((step, i) => {

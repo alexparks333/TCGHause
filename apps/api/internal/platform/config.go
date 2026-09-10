@@ -114,6 +114,16 @@ type Config struct {
 	// local dev so testing this doesn't actually page support@.
 	ClaimsNotifyFrom string
 	ClaimsNotifyTo   string
+	// GooglePlacesAPIKey powers internal/address.AutocompleteClient — real
+	// address suggestions as a seller/buyer types (Google Cloud Console:
+	// enable "Places API (New)", create a restricted API key, see
+	// CLAUDE.md §10). Added specifically to cut down on the free-text
+	// address typos (a wrong city/ZIP pairing, "USA" instead of "US") that
+	// pass a human eye test but fail Pitney Bowes' stricter USPS-backed
+	// validation. Empty skips registering GET /address/autocomplete{,/resolve},
+	// same graceful-degradation pattern as every other optional integration
+	// here — the frontend just falls back to a plain text field.
+	GooglePlacesAPIKey string
 }
 
 // LoadConfig reads configuration from the environment, applying sane local
@@ -140,6 +150,7 @@ func LoadConfig() (Config, error) {
 		ResendAPIKey:               getEnv("RESEND_API_KEY", ""),
 		ClaimsNotifyFrom:           getEnv("CLAIMS_NOTIFY_FROM_EMAIL", "AuctionHous Claims <claims@auctionhous.net>"),
 		ClaimsNotifyTo:             getEnv("CLAIMS_NOTIFY_TO_EMAIL", "support@auctionhous.net"),
+		GooglePlacesAPIKey:         getEnv("GOOGLE_PLACES_API_KEY", ""),
 	}
 	if cfg.Port == "" {
 		return Config{}, fmt.Errorf("PORT must not be empty")

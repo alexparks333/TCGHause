@@ -1,15 +1,15 @@
 {
   "expo": {
     "name": "AuctionHous",
-    "slug": "auctionhaus",
+    "slug": "auctionhous",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "auctionhaus",
+    "scheme": "auctionhous",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.alexhparks.auctionhaus",
+      "bundleIdentifier": "com.alexhparks.auctionhous",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }

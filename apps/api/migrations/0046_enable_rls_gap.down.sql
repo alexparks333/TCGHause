@@ -1,0 +1,11 @@
+alter table tier_events disable row level security;
+alter table stripe_events disable row level security;
+alter table haus_trust_applications disable row level security;
+alter table chargebacks disable row level security;
+alter table claim_events disable row level security;
+alter table claims disable row level security;
+alter table payout_orders disable row level security;
+alter table payouts disable row level security;
+alter table order_evidence disable row level security;
+alter table order_items disable row level security;
+alter table orders disable row level security;

@@ -119,12 +119,12 @@ func HandleGetMyTier(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// statusForApplicationErr maps this package's Haus Trust application
+// statusForApplicationErr maps this package's Hous Trust application
 // errors to HTTP statuses — same shape as internal/dispute/http.go's own
 // statusFor, kept local since these errors are seller-package-specific.
 func statusForApplicationErr(err error) int {
 	switch {
-	case errors.Is(err, ErrNotEligibleForHausTrust), errors.Is(err, ErrApplicationPending),
+	case errors.Is(err, ErrNotEligibleForHousTrust), errors.Is(err, ErrApplicationPending),
 		errors.Is(err, ErrApplicationNotPending), errors.Is(err, ErrInvalidGrantedPct):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, ErrApplicationNotFound):
@@ -138,16 +138,16 @@ type applyResponse struct {
 	ApplicationID string `json:"applicationId"`
 }
 
-// HandleApplyForHausTrust backs a Platinum seller's "Apply for Haus Trust"
+// HandleApplyForHousTrust backs a Platinum seller's "Apply for Hous Trust"
 // action.
-func HandleApplyForHausTrust(pool *pgxpool.Pool) http.HandlerFunc {
+func HandleApplyForHousTrust(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := platform.UserIDFromContext(r.Context())
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		id, err := ApplyForHausTrust(r.Context(), pool, userID)
+		id, err := ApplyForHousTrust(r.Context(), pool, userID)
 		if err != nil {
 			http.Error(w, err.Error(), statusForApplicationErr(err))
 			return
@@ -157,16 +157,16 @@ func HandleApplyForHausTrust(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// --- Admin: Haus Trust applications ---
+// --- Admin: Hous Trust applications ---
 //
 // Same minimal-admin-surface caveat as internal/dispute/http.go's own
 // admin routes: gated by the ADMIN_EMAILS allowlist, not a real
 // user/role system.
 
-// HandleAdminListHausTrustApplications backs the admin queue — ?status=
+// HandleAdminListHousTrustApplications backs the admin queue — ?status=
 // narrows to one state ("pending" is the actual "needs a decision" queue);
 // omitted returns everything, newest first.
-func HandleAdminListHausTrustApplications(pool *pgxpool.Pool, adminEmails string) http.HandlerFunc {
+func HandleAdminListHousTrustApplications(pool *pgxpool.Pool, adminEmails string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		callerID, ok := platform.UserIDFromContext(r.Context())
 		if !ok {
@@ -177,7 +177,7 @@ func HandleAdminListHausTrustApplications(pool *pgxpool.Pool, adminEmails string
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		apps, err := ListHausTrustApplications(r.Context(), pool, r.URL.Query().Get("status"))
+		apps, err := ListHousTrustApplications(r.Context(), pool, r.URL.Query().Get("status"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -193,9 +193,9 @@ type decideApplicationRequest struct {
 	Note       string  `json:"note"`
 }
 
-// HandleAdminDecideHausTrustApplication approves (setting the seller's
+// HandleAdminDecideHousTrustApplication approves (setting the seller's
 // negotiated rate) or rejects one pending application.
-func HandleAdminDecideHausTrustApplication(pool *pgxpool.Pool, adminEmails string) http.HandlerFunc {
+func HandleAdminDecideHousTrustApplication(pool *pgxpool.Pool, adminEmails string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		callerID, ok := platform.UserIDFromContext(r.Context())
 		if !ok {
@@ -211,7 +211,7 @@ func HandleAdminDecideHausTrustApplication(pool *pgxpool.Pool, adminEmails strin
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if err := DecideHausTrustApplication(r.Context(), pool, r.PathValue("id"), callerID, req.Approve, req.GrantedPct, req.Note); err != nil {
+		if err := DecideHousTrustApplication(r.Context(), pool, r.PathValue("id"), callerID, req.Approve, req.GrantedPct, req.Note); err != nil {
 			http.Error(w, err.Error(), statusForApplicationErr(err))
 			return
 		}

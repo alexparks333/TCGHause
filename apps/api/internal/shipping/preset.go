@@ -112,12 +112,19 @@ func (p Preset) PackagingLabel() string {
 // TrackedEnvelopeCents is the flat buyer-facing price for the
 // tracked_envelope preset — a product decision, not a live quote (unlike
 // shippo_ground_advantage, Pitney Bowes' IMb letter cost doesn't vary by
-// destination the way a package rate does). Set from real sandbox
-// pricing: ~$1.19 non-machinable-rate postage (a semi-rigid card saver
-// still counts as rigid enough to require it) + ~$0.32 Pitney Bowes IMb
-// fee at sub-50/month volume, rounded up slightly. Revisit once real
-// volume brings the per-piece fee down.
-const TrackedEnvelopeCents = 151
+// destination the way a package rate does). Set from a real, live sandbox
+// Create Shipment response (not an estimate): $1.07 USPS First-Class Mail
+// metered-rate postage + $0.49 USPS nonmachinable surcharge (a card saver
+// is rigid enough to require NMLETTER, see BuyLabel's own doc comment) =
+// $1.56 totalCarrierCharge, confirmed via PitneyBowesClient.BuyLabel.
+// This is the carrier's own postage cost — whether Pitney Bowes' Shipping
+// 360 platform adds its own separate per-label/subscription fee on top in
+// production (distinct from carrier postage, the same "aggregator fee vs.
+// postage passthrough" split docs/Shipping_Research.md draws for Shippo/
+// EasyPost) is still an open question to confirm with Pitney Bowes before
+// launch — a sandbox rate/shipment response has no reason to reflect that
+// billing layer. Revisit if that turns out to be nonzero.
+const TrackedEnvelopeCents = 156
 
 // PackageRequiredCents / SignatureRequiredCents are the value-driven
 // thresholds (product decision): $100 crosses into mandatory package
@@ -130,6 +137,32 @@ const (
 	PackageRequiredCents   = 10000
 	SignatureRequiredCents = 50000
 )
+
+// SignatureRequestThresholdCents is a second, independent signature-related
+// threshold — distinct from SignatureRequiredCents above, which is based on
+// the FINAL sale price and only known at checkout/close time. This one is
+// a listing-time heuristic: once a listing's own starting bid or Buy It Now
+// price crosses $250, the Sell wizard locks "Signature Required" on and the
+// seller can't opt out (product decision — a seller listing something this
+// valuable doesn't get a choice, the same way $500 final sale price isn't a
+// choice either). Recomputed fresh by internal/listing.Create/Update from
+// whatever price the seller actually submitted (never trusted from the
+// client — same "server derives it" rule as everywhere else in this
+// package) and stored on listings.request_signature, which UpgradePreset
+// below ORs together with the final-price rule: a low-starting-bid auction
+// that never crosses $500 at sale can still ship signature-required if the
+// seller's own listing-time price already crossed this bar.
+const SignatureRequestThresholdCents = 25000
+
+// RequestSignatureFromPrice is the shared "does this price cross the
+// listing-time signature bar" check — internal/listing.Create/Update both
+// call this against whichever price the seller actually submitted
+// (starting bid or Buy It Now, whichever is higher/known), so the decision
+// is made once, in one place, rather than each caller re-deriving the same
+// comparison against SignatureRequestThresholdCents.
+func RequestSignatureFromPrice(referencePriceCents int64) bool {
+	return referencePriceCents >= SignatureRequestThresholdCents
+}
 
 // RequiredMechanism derives the minimum mechanism an order's final charged
 // amount mandates — the floor UpgradePreset enforces against whatever the
@@ -153,7 +186,15 @@ func RequiredMechanism(amountCents int64) Mechanism {
 // of envelope postage) rather than shippo_ground_advantage. A
 // free_bubble_mailer/free_box order crossing $500 stays exactly as it is
 // mechanism-wise — already package — just with signatureRequired now true.
-func UpgradePreset(chosen Preset, finalAmountCents int64) (resolved Preset, signatureRequired bool) {
+//
+// sellerRequestedSignature is the listing's own stored request_signature
+// (internal/listing.Create/Update, via RequestSignatureFromPrice) — ORed
+// with the final-price rule below, never the only input, since a final
+// sale price crossing $500 must always require a signature regardless of
+// what the listing-time price happened to be (a $10 starting-bid auction
+// that closes at $600 gets no seller-side signal at all, but still needs
+// one).
+func UpgradePreset(chosen Preset, finalAmountCents int64, sellerRequestedSignature bool) (resolved Preset, signatureRequired bool) {
 	resolved = chosen
 	if RequiredMechanism(finalAmountCents) == MechanismPackage && chosen.Mechanism() == MechanismLetter {
 		if chosen.IsFree() {
@@ -162,7 +203,7 @@ func UpgradePreset(chosen Preset, finalAmountCents int64) (resolved Preset, sign
 			resolved = PresetShippoGroundAdvantage
 		}
 	}
-	signatureRequired = finalAmountCents >= SignatureRequiredCents
+	signatureRequired = sellerRequestedSignature || finalAmountCents >= SignatureRequiredCents
 	return resolved, signatureRequired
 }
 

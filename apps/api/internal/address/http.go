@@ -35,6 +35,48 @@ func HandleGet(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+// HandleAutocomplete returns candidate addresses for whatever's been typed
+// so far into "Address line 1" — gated behind auth purely to keep the
+// Google API key's usage/cost attributable and rate-limitable to real
+// signed-in users, not because a suggestion list itself is sensitive.
+func HandleAutocomplete(client *AutocompleteClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := platform.UserIDFromContext(r.Context()); !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		query := r.URL.Query().Get("q")
+		suggestions, err := client.Suggest(r.Context(), query)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Suggestions []Suggestion `json:"suggestions"`
+		}{Suggestions: suggestions})
+	}
+}
+
+// HandleAutocompleteResolve turns a suggestion the caller picked back into
+// structured address fields to autofill the rest of the form with.
+func HandleAutocompleteResolve(client *AutocompleteClient) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := platform.UserIDFromContext(r.Context()); !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		placeID := r.URL.Query().Get("placeId")
+		resolved, err := client.Resolve(r.Context(), placeID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resolved)
+	}
+}
+
 func HandleUpsert(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := platform.UserIDFromContext(r.Context())

@@ -3,14 +3,23 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, AlertTriangle } from "lucide-react";
+import { Check, AlertTriangle, Truck, ShieldCheck } from "lucide-react";
 import BidBox from "./BidBox";
 import BuyNowButton from "./BuyNowButton";
+import MakeOfferButton from "./MakeOfferButton";
 import SoldBanner from "./SoldBanner";
 import OwnerListingBanner from "./OwnerListingBanner";
 import PaymentCountdown from "./PaymentCountdown";
 import { getListing, type BidResult } from "@/lib/api";
-import { formatPrice, formatMsLeft, paymentDueAt, type Listing, type MyBid } from "@/lib/types";
+import {
+  formatPrice,
+  formatMsLeft,
+  paymentDueAt,
+  shippingCostLabel,
+  shippingMethodLabel,
+  type Listing,
+  type MyBid,
+} from "@/lib/types";
 import { useMsLeft } from "@/lib/useMsLeft";
 import { usePokeCelebrations } from "./CelebrationWatcher";
 
@@ -62,6 +71,16 @@ export default function AuctionPriceBox({
     highBidderId: listing.highBidderId,
     outcome: listing.outcome,
     paidAt: listing.paidAt,
+    // Buy It Now (and, since MakeOfferButton has nothing to measure an
+    // offer against once it's gone, the offer button alongside it) has to
+    // live here too, not just be read straight off the `listing` prop —
+    // internal/auction.PlaceBid clears buyItNowPriceCents server-side the
+    // instant a bid lands, but this component only re-renders from a fresh
+    // `listing` prop on a full page load/refresh. Without tracking it here,
+    // handleBidPlaced's own bid response has nowhere to write that change,
+    // so Buy It Now kept showing until the page was manually reloaded —
+    // the exact bug this was built to fix.
+    buyItNowPriceCents: listing.buyItNowPriceCents,
   });
   if (listing !== prevListing) {
     setPrevListing(listing);
@@ -71,6 +90,7 @@ export default function AuctionPriceBox({
       highBidderId: listing.highBidderId,
       outcome: listing.outcome,
       paidAt: listing.paidAt,
+      buyItNowPriceCents: listing.buyItNowPriceCents,
     });
   }
 
@@ -99,6 +119,9 @@ export default function AuctionPriceBox({
       highBidderId: result.highBidderId,
       outcome: undefined,
       paidAt: undefined,
+      // Every successful bid clears Buy It Now server-side — see the doc
+      // comment on `live`'s own declaration above.
+      buyItNowPriceCents: undefined,
     });
     setMyMaxBidCents(maxBidCents);
   }
@@ -120,6 +143,7 @@ export default function AuctionPriceBox({
                 highBidderId: fresh.highBidderId,
                 outcome: fresh.outcome ?? current.outcome,
                 paidAt: fresh.paidAt ?? current.paidAt,
+                buyItNowPriceCents: fresh.buyItNowPriceCents,
               }
             : current
         );
@@ -160,7 +184,14 @@ export default function AuctionPriceBox({
       <p className="text-xs text-gray-500">
         {auctionClosed ? "Auction ended — final price" : "Current bid"}
       </p>
-      <p className="text-3xl font-bold text-gray-900">{formatPrice(live.currentPriceCents)}</p>
+      {/* Same red-when-ended treatment ListingCard already uses for its own
+          price figure (hasEnded ? text-brand-urgent : text-gray-900) — this
+          detail page's price number was the one place that convention
+          hadn't been applied, so a sold/ended auction here still read as a
+          plain, still-live "current bid" at a glance. */}
+      <p className={`text-3xl font-bold ${auctionClosed ? "text-brand-urgent" : "text-gray-900"}`}>
+        {formatPrice(live.currentPriceCents)}
+      </p>
       <p className="mt-1 flex items-center justify-between text-sm">
         <span className="text-gray-500">{live.bidCount} bids</span>
         <span
@@ -178,6 +209,28 @@ export default function AuctionPriceBox({
           {!auctionClosed && msLeft !== null ? formatMsLeft(msLeft) : ""}
         </span>
       </p>
+
+      {/* Shipping/payment-protected lives here — always right after the
+          price header, regardless of which branch below renders (closed,
+          owner, bidding, signed-out) — rather than as a page-level sibling
+          after this whole component, which is what the fixed-price listing
+          path still does (app/listing/[id]/page.tsx). Moved in specifically
+          so Buy It Now (further down, inside the isLoggedIn branch) can sit
+          below it: product decision that Buy It Now shouldn't be the first
+          thing a bidder sees above the bidding box and the real shipping
+          cost, on an item they might also just want to bid on. */}
+      <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
+        <Truck size={18} />
+        <span>
+          <span className="font-medium text-gray-700">{shippingCostLabel(listing)}</span>
+          {" : "}
+          {shippingMethodLabel(listing)}
+        </span>
+      </div>
+      <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+        <ShieldCheck size={14} />
+        Payment protected — released to the seller after your delivery window
+      </div>
 
       {auctionClosed ? (
         youWonAwaitingPayment ? (
@@ -201,13 +254,15 @@ export default function AuctionPriceBox({
         ) : (
           <SoldBanner
             label={
-              youAreWinning
-                ? live.outcome === "bought_now"
-                  ? "You bought this — paid."
-                  : "You won this auction — paid."
-                : live.outcome === "bought_now"
-                  ? "This listing was bought via Buy It Now."
-                  : "This auction has ended."
+              live.outcome === "cancelled"
+                ? "The seller ended this auction and voided every bid."
+                : youAreWinning
+                  ? live.outcome === "bought_now"
+                    ? "You bought this — paid."
+                    : "You won this auction — paid."
+                  : live.outcome === "bought_now"
+                    ? "This listing was bought via Buy It Now."
+                    : "This auction has ended."
             }
           />
         )
@@ -215,14 +270,6 @@ export default function AuctionPriceBox({
         <OwnerListingBanner />
       ) : isLoggedIn ? (
         <>
-          {listing.buyItNowPriceCents && (
-            <div className="mt-4">
-              <BuyNowButton
-                listingId={listing.id}
-                priceCents={listing.buyItNowPriceCents}
-              />
-            </div>
-          )}
           {hasBid && (
             // Keyed on status so a transition (winning <-> outbid) remounts
             // this element and replays the pop-in — a quick, unmissable
@@ -251,6 +298,23 @@ export default function AuctionPriceBox({
             </div>
           )}
           <BidBox listing={listing} onBidPlaced={handleBidPlaced} />
+          {/* Below the bidding box and the shipping/payment-protected
+              lines above (product decision) — reads live.buyItNowPriceCents,
+              not listing.buyItNowPriceCents, so it disappears the instant a
+              bid lands without needing a page refresh (see `live`'s own doc
+              comment). */}
+          {live.buyItNowPriceCents && (
+            <div className="mt-4 flex flex-col gap-2">
+              <BuyNowButton listingId={listing.id} priceCents={live.buyItNowPriceCents} />
+              {listing.allowOffers && (
+                <MakeOfferButton
+                  listingId={listing.id}
+                  binPriceCents={live.buyItNowPriceCents}
+                  minOfferCents={listing.minOfferCents}
+                />
+              )}
+            </div>
+          )}
         </>
       ) : (
         <Link

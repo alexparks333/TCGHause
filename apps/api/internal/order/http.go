@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/platform"
 )
 
@@ -152,5 +153,45 @@ func HandleShip(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(refreshed)
+	}
+}
+
+// HandleDevAdvance is the Transactions page's dev-only "advance" button —
+// pushes an order exactly one step through the real shipping/delivery/
+// claim-window flow (DevAdvance's own doc comment has the full reasoning).
+// Registered unconditionally (cmd/api/main.go, same as every other
+// dev-only route in this codebase) — AllowDevAdvance is what actually
+// gates it, checked inside DevAdvance itself, not here.
+func HandleDevAdvance(pool *pgxpool.Pool, paymentClient *payment.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		callerID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		o, err := GetForListing(r.Context(), pool, r.PathValue("id"))
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, ErrNotFound) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+
+		updated, err := DevAdvance(r.Context(), pool, paymentClient, o.ID, callerID)
+		if err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, ErrDevAdvanceDisabled), errors.Is(err, ErrNotParticipant):
+				status = http.StatusForbidden
+			case errors.Is(err, ErrNothingToAdvance), errors.Is(err, ErrInvalidTransition), errors.Is(err, ErrEvidenceIncomplete):
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
 	}
 }

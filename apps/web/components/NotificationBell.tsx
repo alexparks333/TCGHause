@@ -11,6 +11,7 @@ import {
   type AppNotification,
 } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/format";
+import ListingImage from "@/components/ListingImage";
 
 const POLL_MS = 15000;
 
@@ -39,7 +40,55 @@ const KIND_META: Record<
     badgeLabel: "Outbid",
     text: (t) => `You've been outbid on ${t}`,
   },
+  seller_review: {
+    badgeColor: "bg-brand-gold",
+    badgeLabel: "Review",
+    text: (t) => `You got a new review on ${t}`,
+  },
+  buyer_review: {
+    badgeColor: "bg-brand-gold",
+    badgeLabel: "Review",
+    text: (t) => `The seller left you a review on ${t}`,
+  },
+  offer_received: {
+    badgeColor: "bg-sky-500",
+    badgeLabel: "Offer",
+    text: (t) => `New offer on ${t}`,
+  },
+  offer_accepted: {
+    badgeColor: "bg-brand-success",
+    badgeLabel: "Accepted",
+    text: (t) => `Your offer on ${t} was accepted!`,
+  },
+  offer_declined: {
+    badgeColor: "bg-gray-400",
+    badgeLabel: "Declined",
+    text: (t) => `Your offer on ${t} was declined`,
+  },
 };
+
+// Where clicking a notification actually goes. won/bought/sold go to
+// /order/{listingId} — app/order/[id]/page.tsx is keyed by LISTING id, not
+// a real orders.id (it calls getListing(id)/getOrderForListing(id, ...)),
+// and degrades gracefully to its own "shipping isn't wired up yet" copy
+// when no real order row exists yet for that listing — so this is safe to
+// route to unconditionally for these three kinds, no join against orders
+// needed. An offer_received always belongs to the listing's own seller,
+// so it goes straight to that listing's own Offers panel (only rendered
+// for the seller, highlighting this one offer among however many others
+// are pending there); offer_accepted/declined always belong to the buyer
+// who sent it, so those go to the buyer's own sent-offers list instead;
+// everything else (outbid: still just an active auction; the review
+// kinds: no order/offer concept fits any better) goes to the plain
+// listing page.
+function notificationHref(n: AppNotification): string {
+  if (n.kind === "won" || n.kind === "bought" || n.kind === "sold") return `/order/${n.listingId}`;
+  if (n.kind === "offer_received" && n.offerId) return `/listing/${n.listingId}?offer=${n.offerId}`;
+  if ((n.kind === "offer_accepted" || n.kind === "offer_declined") && n.offerId) {
+    return `/account/bids-offers?offer=${n.offerId}`;
+  }
+  return `/listing/${n.listingId}`;
+}
 
 // Server-fetched initial state (Header passes these down), then kept
 // current with a plain poll — same reasoning as CelebrationWatcher, just a
@@ -92,7 +141,7 @@ export default function NotificationBell({
       );
       markNotificationRead(n.id).catch(() => {});
     }
-    router.push(`/listing/${n.listingId}`);
+    router.push(notificationHref(n));
   }
 
   async function handleMarkAllRead() {
@@ -146,7 +195,7 @@ export default function NotificationBell({
                 return (
                   <Link
                     key={n.id}
-                    href={`/listing/${n.listingId}`}
+                    href={notificationHref(n)}
                     role="menuitem"
                     onClick={(e) => {
                       e.preventDefault();
@@ -156,18 +205,16 @@ export default function NotificationBell({
                       n.readAt ? "" : "bg-brand-navy/[0.03]"
                     }`}
                   >
-                    <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-brand-surface">
-                      {n.listingImageUrl && (
-                        // Fixed 40px thumbnail in a dropdown row — next/image's
-                        // overhead isn't worth it here, same call as
-                        // CelebrationToast's own reveal-card thumbnail.
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={n.listingImageUrl}
-                          alt=""
-                          className="h-full w-full object-cover"
-                        />
-                      )}
+                    <div className="relative aspect-[5/7] w-9 shrink-0">
+                      {/* The badge sits in this outer, non-clipping wrapper
+                          and the photo/placeholder in its own
+                          overflow-hidden inner one — the badge is meant to
+                          overlap the card's rounded corner, so it can't
+                          share a box that clips to that same rounding or
+                          the corner poking out gets cut off. */}
+                      <div className="h-full w-full overflow-hidden rounded-lg">
+                        <ListingImage src={n.listingImageUrl} game={n.listingGame} label={n.listingTitle} />
+                      </div>
                       <span
                         className={`absolute -right-1 -top-1 rounded-full px-1 py-0.5 text-[8px] font-bold leading-none text-white shadow ${meta.badgeColor}`}
                       >
@@ -178,7 +225,10 @@ export default function NotificationBell({
                       <span className={`block ${n.readAt ? "text-gray-600" : "font-semibold text-gray-900"}`}>
                         {meta.text(n.listingTitle)}
                       </span>
-                      <span className="mt-0.5 block text-xs text-gray-400">
+                      {/* Date.now()-based text — see ThreadListItem's
+                          matching comment for why this needs
+                          suppressHydrationWarning, not a fix elsewhere. */}
+                      <span className="mt-0.5 block text-xs text-gray-400" suppressHydrationWarning>
                         {formatRelativeTime(n.createdAt)}
                       </span>
                     </span>

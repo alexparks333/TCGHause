@@ -20,7 +20,7 @@ concrete system architecture, borrowing heavily from eBay's 25+ years of battle-
 marketplace mechanics, adapted to the TCG/collectibles domain and our 5.5–7% margin.
 **Known follow-up, not yet done:** §6.4 below ("Seller tiers & performance standards")
 and §4 ("Core domain model")'s `SellerTierState` still describe design-doc.md's old
-Tier 1/2/3 ladder, not PercentageModel.md's real New/Bronze/Silver/Gold/Haus Trust
+Tier 1/2/3 ladder, not PercentageModel.md's real New/Bronze/Silver/Gold/Hous Trust
 5-tier system — that section needs a pass to match, separate from this fee-number fix.
 
 **Status:** the repo now has a working scaffold — `apps/web` (marketplace homepage +
@@ -336,12 +336,15 @@ early work; revisit once there's real marketplace liquidity.
 ### 6.11 Shipping
 
 Not really an eBay-specific mechanic to borrow so much as an integration point: use a
-shipping API (Shippo/EasyPost) for label purchase across USPS/UPS, and ingest carrier
-webhooks for delivery confirmation — that webhook is what drives the escrow release
-timers in design doc §3 (24h post-delivery for tracked, 6 business days post-"shipped"
-for PWE). Keep v1 **domestic-only**; eBay's Global Shipping Program / international
-shipping is a real feature but a whole additional compliance surface (customs, duties)
-not worth taking on before domestic liquidity exists.
+shipping API for label purchase, and ingest carrier webhooks for delivery confirmation
+— that webhook is what drives the escrow release timers in design doc §3 (24h
+post-delivery for tracked, 6 business days post-"shipped" for PWE). Keep v1
+**domestic-only**; eBay's Global Shipping Program / international shipping is a real
+feature but a whole additional compliance surface (customs, duties) not worth taking on
+before domestic liquidity exists.
+
+**Status: built, not just designed** — see §6.18 for the real, live two-vendor
+implementation this section originally only scoped.
 
 The design doc's "Ship to Platform Vault" (§5) is a v2+ feature — it implies physical
 warehouse operations, not just software, so don't let it block v1 scope.
@@ -803,6 +806,167 @@ directly with curl.
   "Escalate this claim" button. Full setup, DNS records, and how it was verified
   end-to-end against a real inbox: `docs/Resend.md`.
 
+### 6.18 Real shipping label purchase: Shippo (package) + Pitney Bowes (tracked envelope)
+
+**Status: built and verified live end-to-end, both vendors.** `internal/shipping`
+integrates two real carrier-label vendors, each locked to exactly one `Preset`/
+`Mechanism` (`preset.go`) — a seller's listing-time choice can never buy a label
+through the wrong vendor, and `HandleBuyLabel` (`label.go`) dispatches purely on that
+mechanism, never on which vendor happens to be configured. `docs/Shipping_Research.md`
+is the original pre-implementation research this was built from (its EasyPost
+recommendation didn't survive contact with EasyPost's account-verification wall — see
+§1 there and `doc.go`'s own comment); this section documents what's actually live.
+
+- **Shippo — `shippo_ground_advantage` / `free_bubble_mailer` / `free_box`.** Real
+  tracked-package labels (USPS Ground Advantage by default), unchanged from the
+  original research's recommendation for the package tier.
+- **Pitney Bowes — `tracked_envelope` / `free_envelope`.** Real USPS First-Class Mail
+  with an Intelligent Mail Barcode (IMb) — the mechanism eBay's own "Standard Envelope"
+  program is built on, and the only way tracking stays viable on sub-$20 raw singles,
+  where Shippo's own cheapest tracked-package floor (~$6-9, per
+  `docs/Shipping_Research.md` §3) would eat the entire sale.
+  - **Flat buyer-facing price: `TrackedEnvelopeCents` = $1.56** — a real, live Pitney
+    Bowes sandbox Create Shipment response, not an estimate: $1.07 USPS First-Class
+    metered postage + $0.49 nonmachinable surcharge (a card saver is genuinely too
+    rigid for USPS's automated letter sorters, so `parcelType` is always `NMLETTER`,
+    never plain `LETTER` — confirmed live that this is a real, correct distinction,
+    not just a compliance formality: a same-parcel `LETTER` vs. `NMLETTER` rate quote
+    showed the surcharge appearing only on the latter). Whether Pitney Bowes' own
+    Shipping 360 platform layers a separate per-label/subscription fee on top of that
+    carrier postage in production (the same "aggregator fee vs. postage passthrough"
+    split `docs/Shipping_Research.md` draws for Shippo/EasyPost) is still open —
+    confirm with Pitney Bowes before launch.
+  - **No Shipper ID needed** — confirmed directly with Pitney Bowes support: that's a
+    legacy-API concept, not part of the Shipping 360 platform these credentials
+    authenticate against. `PitneyBowesClient` looks up its own USPS carrier account
+    automatically via `GET /shipping/api/v1/carrierAccounts`, never a hardcoded or
+    hand-entered account ID.
+  - **The integration point that actually blocked this the longest wasn't
+    credentials or account setup — it was Pitney Bowes' request/response shape**,
+    and it split across two unrelated API platforms with almost entirely
+    JS-rendered docs. Resolved by fetching the real OpenAPI spec directly (as plain
+    JSON, not the rendered docs page) and, for the final piece, a direct answer from
+    Pitney Bowes support: IMb/`NMLETTER` labels use a completely different
+    `labelSize` enum (`DOC_6X4`/`DOC_9X4`) than every other parcel type
+    (`DOC_4X6`/`DOC_4X8`/`DOC_8X11`), undocumented on Create Shipment's own reference
+    page. Every finding is recorded in `pitneybowes.go`'s own doc comments — treat
+    that file as the source of truth over this summary if the two ever disagree.
+- **`address.Normalize`** (`internal/address`) exists because of a real, live-found
+  gap between the two vendors: Shippo silently tolerated a free-text `Country` value
+  like `"USA"`, Pitney Bowes' stricter ISO-3166-1-alpha-2 validation rejected it
+  outright. Fixed once, at the shared address layer both vendors read from — not a
+  per-vendor patch — since `AddressForm.tsx`'s Country field is plain free text with
+  no dropdown/autocomplete, so any real seller could hit this. Scoped to US-only
+  variants (`"USA"`, `"United States"`, etc. -> `"US"`) since the app itself is
+  domestic-only in v1, not a general country-name database.
+- **Frontend**: `ShippingLabelControl.tsx` ("Buy Shipping Label" -> "Label ready —
+  {carrier} {service}") and `PrintLabelButton.tsx` (download/change) are generic
+  across both vendors — they render whatever carrier/service/tracking/cost the
+  backend returns, with no Shippo-specific assumption anywhere, so this dispatch is
+  invisible at the UI layer by design. `TRACKED_ENVELOPE_CENTS` in `lib/types.ts`
+  mirrors `TrackedEnvelopeCents` exactly and must be kept in sync if that ever changes.
+- **`POST /shipping/verify-address`** (`verify.go`) runs the same real USPS address
+  check Pitney Bowes' own Create Shipment performs, but as a standalone,
+  non-purchasing lookup — added after a real seller hit "E412 - the delivery
+  information does not match data for this city" only *after* attempting a label
+  purchase, which for `tracked_envelope` specifically is unrecoverable: **Pitney
+  Bowes' IMb labels are not refundable at all** (confirmed directly from their docs —
+  unlike Shippo's package labels, which do support a refund window). On a
+  corrected-but-still-deliverable result (Pitney Bowes' own CASS-style normalization —
+  confirmed live: it fixes casing, expands abbreviations, and even resolves a wrong
+  ZIP to the right one) it auto-fills the form with the corrected fields rather than
+  just saying "close enough." Not scoped to a specific order/listing, so it's reusable
+  anywhere an address is entered. Errors from any Pitney Bowes call now surface as the
+  one human-readable line Pitney Bowes itself provides (`friendlyPitneyBowesError`,
+  `pitneybowes.go`) instead of the full raw validation-error JSON array — found live
+  watching that raw JSON render straight onto the order page under "Buy Shipping
+  Label" before this existed. **A seller must actually run this check — it's a hard
+  gate, not a suggestion** — an explicit product decision, since a wrong seller
+  address is the seller's own cost to fix (a second, non-refundable tracked_envelope
+  label): `ShippingLabelControl.tsx`'s FIRST "Buy Shipping Label" click (previously no
+  address review at all — it silently bought against whatever was in Account
+  Settings) and `PrintLabelButton.tsx`'s "Change Shipping Label" -> "Buy new label"
+  are both disabled until `verifyStatus` comes back `valid` or `corrected`; editing
+  any field resets that status. `AddressForm.tsx` (Account Settings) offers the same
+  "Verify address" button but doesn't hard-gate Save on it — that address isn't itself
+  a purchase.
+- **The buyer side of the same problem: `ShippingAddressGate.tsx`** sits in front of
+  the actual payment UI on both checkout paths `MockCheckout.tsx` handles (paying for
+  a won auction, and Buy It Now) — added because neither ever showed the buyer their
+  own shipping address before charging them at all. Explicit product decision: the
+  buyer must see the address, and check an acknowledgment box ("I confirm this
+  shipping address is correct. If it's wrong, I'm responsible for any cost to fix it
+  after I've paid.") before the payment methods (`StripeCheckout`/`PlainMockCheckout`)
+  render at all — the checkbox is the hard gate here, not a required "Verify address"
+  click (unlike the seller side above), since USPS's database lagging a brand-new
+  address shouldn't be able to block a buyer from paying at all; verifying is offered
+  and encouraged, not mandatory to check the box.
+- **`orders.label_cost_cents` accumulates across every Pitney Bowes purchase on one
+  order, rather than being overwritten by the latest one** (`HandleBuyLabel`,
+  `label.go`) — found live: a seller who bought a first label ($1.56), then used
+  "Change Shipping Label" to buy a second ($1.56), saw the receipt still show only
+  -$1.56, silently losing track of the first purchase's real, non-refundable postage.
+  Since an order's mechanism never changes between purchases on it (`Mechanism` is
+  resolved once at order creation), every prior label on a `MechanismLetter` order is
+  guaranteed to have been Pitney Bowes, and guaranteed non-refundable — so the fix
+  sums every purchase's cost rather than replacing it. Verified live: two $1.56
+  Pitney Bowes purchases on one order correctly show "Shipping label: -$3.12" in
+  `OrderReceipt.tsx`, with `Order earnings` recalculated to match. Deliberately scoped
+  to `MechanismLetter` only, not Shippo/`MechanismPackage` — that side's own
+  never-voids-the-old-label gap is the pre-existing TODO in `label.go`, a separate,
+  not-yet-fixed problem.
+
+### 6.19 Pitney Bowes token self-healing, and real address autocomplete
+
+Two follow-ups to §6.18, both found live by a real seller hitting them, not from
+reading the API docs more carefully.
+
+- **A cached Pitney Bowes bearer token can go bad before its own reported expiry.**
+  Found live: `verify pitney bowes address: pitney bowes returned 401:
+  {"message":"Unauthorized"}` against a token `accessToken()` still considered good for
+  hours, while a brand-new token fetched seconds later against the exact same request
+  succeeded immediately — the sandbox itself invalidated the cached token early, not a
+  bug in our expiry math. `PitneyBowesClient.get`/`post` (via a shared
+  `authenticatedDo`) now retry exactly once on a 401: clear the cached token, fetch a
+  fresh one, resend. Before this fix, one bad cached token meant every Pitney Bowes
+  call failed — verify, buy label, carrier-account lookup — until the process
+  restarted; now it's a single self-healing retry, invisible to the caller.
+- **`internal/address.AutocompleteClient` (Google Places API (New))** — added because
+  the account-wide address is a plain free-text form with no dropdown/suggestions
+  (`AddressForm.tsx`), which is exactly what produced the `Normalize`d "USA" gap this
+  file already documents (§5's Address doc comment) and, live, a real address that a
+  human would call correct but that still needed CASS normalization to match Pitney
+  Bowes' stricter USPS-backed check. Suggesting real, USPS-known addresses as someone
+  types — rather than only validating after the fact — closes that class of problem
+  before it reaches Pitney Bowes at all, not just reports it more legibly. Same
+  graceful-degradation shape as every other optional integration in this repo: no
+  `GOOGLE_PLACES_API_KEY` (server-side only, §10) means `GET
+  /address/autocomplete{,/resolve}` just aren't registered, and the frontend's
+  `AddressAutocompleteInput` quietly behaves like a plain text input — no error, no
+  visual difference, verified by `autocompleteAddress` swallowing any failure and
+  returning `[]` rather than throwing.
+  - **`Suggest`** calls Places Autocomplete (New), restricted to `includedRegionCodes:
+    ["us"]` (CLAUDE.md §6.11 — domestic-only in v1), returning just `{placeId, text}`
+    pairs for a dropdown — deliberately not the full Places response shape, which
+    carries fields this app has no use for.
+  - **`Resolve`** calls Places Details (New) for one `placeId` and parses its flat
+    `addressComponents` array (tagged by type — `street_number`, `route`, `locality`,
+    `administrative_area_level_1`, `postal_code`, `postal_code_suffix`, `country`) into
+    this app's own `line1`/`city`/`state`/`postalCode`/`country` shape — never
+    `fullName` or `phone`, which Places has no concept of and which the caller keeps
+    whatever they'd already typed.
+  - **`AddressAutocompleteInput.tsx`** is a drop-in replacement for a plain "Address
+    line 1" `<input>` (same value/onChange contract, plus an `onResolve` callback) —
+    swapped into `ShippingAddressGate.tsx` (buyer checkout), `AddressForm.tsx` (Account
+    Settings), and `PrintLabelButton.tsx`'s "ship from a different address" override,
+    the three places a full postal address gets typed by hand in this app. Debounces
+    260ms after a 4-character minimum before calling `Suggest`, keyboard-navigable
+    (arrow keys + Enter/Escape), and selecting a suggestion both fills `line1` with just
+    the street portion (`text.split(",")[0]`) and calls `onResolve` with the rest —
+    each caller's own `set()`/`setForm()` merges that in exactly like a verify-address
+    correction already did, so this didn't need new state-management shape anywhere it
+    was added.
+
 ---
 
 ## 7. Compliance flags (non-engineering, but architecture-shaping)
@@ -840,12 +1004,12 @@ still the v1 gap, per §6.7. Buyer/seller messaging is done (§6.15). The disput
 resolution flow is done (§6.5, §6.17) — real state machine, auto-adjudication, Stripe
 refunds, claim ticket numbers, and a Workers-side admin queue/decide UI gated by
 `ADMIN_EMAILS`, plus a live `support@` email notification via Resend (`docs/Resend.md`)
-when a claim needs a human. Still to build: fixed-price checkout (the
-"Buy It Now" button is a real listing but a disabled placeholder — no order/payment
-flow behind it yet), cart batching for sub-$20 singles, escrow state machine, seller
-Tier 1–3 (§6.4's tier ladder itself is real — see `internal/seller` — this refers to
-the rest of the eBay-style seller-standards machinery), feedback + detailed ratings,
-cert-number grading verification, domestic shipping integration. **Wallet + ledger
+when a claim needs a human. Real shipping label purchase is done too (§6.18) — Shippo
+for tracked packages, Pitney Bowes for the tracked-envelope tier, both verified live
+end-to-end including a real purchase through the actual order UI. Still to build: cart
+batching for sub-$20 singles, seller Tier 1–3 (§6.4's tier ladder itself is real — see
+`internal/seller` — this refers to the rest of the eBay-style seller-standards
+machinery), feedback + detailed ratings, cert-number grading verification. **Wallet + ledger
 is explicitly removed from v1 scope, not just unbuilt** — see §5.1/§7; it's blocked on
 legal review, not on engineering bandwidth, so don't schedule it as ordinary backlog
 work.
@@ -900,6 +1064,14 @@ learned ranking, Promoted Listings/ads, bulk seller API polish, international sh
    Configuration → Redirect URLs: add `http://localhost:4000/auth/callback` (and later
    the production equivalent) — `signInWithOAuth`'s `redirectTo` is rejected if it isn't
    on this allow list.
+6. **Address autocomplete** (optional, only needed for the address-suggestion dropdown
+   on checkout's shipping-address step and Account Settings' shipping address to appear
+   at all): in Google Cloud Console, APIs & Services → Library, enable **Places API
+   (New)** on the same (or a separate) project as the OAuth Client ID above, then
+   Credentials → Create API key, and restrict it to Places API only. This is a plain
+   API key, not an OAuth client — set it server-side only as `GOOGLE_PLACES_API_KEY` in
+   `apps/api/.env`, never in `apps/web`. Leaving it unset doesn't break anything — see
+   §6.19.
 
 Local dev currently targets that real (free-tier) Supabase project directly — there's
 no Docker in this environment, so `infra/docker-compose.yml` (Postgres/Redis/MinIO) is

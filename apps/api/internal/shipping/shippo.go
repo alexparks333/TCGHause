@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -191,17 +192,53 @@ func (c *Client) rateShop(ctx context.Context, from, to *address.Address, fromEm
 }
 
 // QuoteRate returns the cheapest available rate's cost without buying
-// anything — used to show a one-time shipping-cost estimate on a listing
-// for the shippo_ground_advantage preset (internal/listing.Create). Never
-// the guaranteed final price: a real buyer address isn't known yet, so
-// `to` here is a representative reference point chosen by the caller, not
-// the eventual buyer's actual address.
-func (c *Client) QuoteRate(ctx context.Context, from, to *address.Address, fromEmail, toEmail string, preset Preset) (int64, error) {
-	best, err := c.rateShop(ctx, from, to, fromEmail, toEmail, preset, false)
+// anything. Two callers, two different meanings of `to`/signatureRequired:
+// internal/listing.Create uses this for a listing's one-time estimate
+// against shipping.ReferenceAddress (never the real buyer, unknown at
+// listing time, so always signatureRequired=false there — the final price
+// isn't known yet either); HandleCreateCheckoutIntent (checkout.go) uses
+// this at checkout time with the real buyer's real address and the real
+// resolved signatureRequired, which is what makes that call an actual
+// quote rather than an estimate.
+func (c *Client) QuoteRate(ctx context.Context, from, to *address.Address, fromEmail, toEmail string, preset Preset, signatureRequired bool) (int64, error) {
+	best, err := c.rateShop(ctx, from, to, fromEmail, toEmail, preset, signatureRequired)
 	if err != nil {
 		return 0, err
 	}
 	return centsFromDollarString(best.Amount)
+}
+
+// ChargedCentsLive is ChargedCents' checkout-time counterpart — the fix for
+// the gap ChargedCents' own doc comment names: a buyer charged whatever a
+// listing's one-time estimate said, while the seller's real label (bought
+// later, against the real buyer address) could cost more or less. This is
+// exactly how eBay's own "calculated shipping" works: the listing page
+// shows an estimate against a generic reference point, but the number
+// shown for actual payment is a live rate-shop against the real buyer
+// address — and that's the number that gets charged, not a second, still
+// different number, so there's no post-payment surprise (see this
+// feature's own history for the research this was built from).
+//
+// Falls back to ChargedCents' frozen estimate whenever a live quote isn't
+// actually possible — Shippo not configured, either address missing (e.g.
+// the buyer hasn't saved a shipping address yet), or the rate-shop call
+// itself fails — same graceful-degradation shape as every other optional
+// integration in this codebase. A shipping-quote hiccup must never block
+// checkout; the buyer just sees the old estimate-based number instead,
+// exactly as before this existed.
+func ChargedCentsLive(ctx context.Context, shippoClient *Client, preset Preset, from, to *address.Address, fromEmail, toEmail string, signatureRequired bool, estimatedShippingCents *int64) int64 {
+	if preset.IsFree() || preset == PresetTrackedEnvelope {
+		return ChargedCents(preset, estimatedShippingCents)
+	}
+	if shippoClient == nil || !shippoClient.IsConfigured() || from == nil || to == nil {
+		return ChargedCents(preset, estimatedShippingCents)
+	}
+	cents, err := shippoClient.QuoteRate(ctx, from, to, fromEmail, toEmail, preset, signatureRequired)
+	if err != nil {
+		log.Printf("shipping: live rate-shop failed, falling back to listing estimate: %v", err)
+		return ChargedCents(preset, estimatedShippingCents)
+	}
+	return cents
 }
 
 // BuyLabel rate-shops (via rateShop) and buys the cheapest rate.

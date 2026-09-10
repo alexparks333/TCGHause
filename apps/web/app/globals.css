@@ -90,9 +90,9 @@ body {
   }
 }
 
-/* CelebrationToast (components/CelebrationToast.tsx): the "Bid Won!" /
-   "Item Sold!" burst that plays once per win/sale, then crossfades into a
-   compact card showing what was actually won/sold. */
+/* SoldBanner's (components/SoldBanner.tsx) moneybag burst — CelebrationToast
+   used to share these two keyframes for its own burst phase before it
+   became a single thin toast (below), but SoldBanner still uses both. */
 @keyframes celebration-burst-in {
   0% {
     opacity: 0;
@@ -128,54 +128,78 @@ body {
   animation: celebration-float-up 1.4s ease-out forwards;
 }
 
-@keyframes celebration-fade-out {
-  from {
-    opacity: 1;
-    transform: scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: scale(0.85);
-  }
-}
-.animate-celebration-fade-out {
-  animation: celebration-fade-out 0.3s ease-in forwards;
-}
-
-@keyframes celebration-reveal-in {
+/* CelebrationToast (components/CelebrationToast.tsx): a thin, Rust-pickup-
+   style toast for a win/sale — slides in at the bottom-right corner, holds
+   briefly, then exits by sliding straight up off the screen while fading,
+   rather than sitting still and just fading in place. */
+@keyframes celebration-toast-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.95);
+    transform: translateY(14px) scale(0.97);
   }
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
 }
-.animate-celebration-reveal-in {
-  animation: celebration-reveal-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+.animate-celebration-toast-in {
+  animation: celebration-toast-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-@keyframes celebration-slide-out {
+@keyframes celebration-toast-out {
   from {
     opacity: 1;
     transform: translateY(0);
   }
   to {
     opacity: 0;
-    transform: translateY(-8px);
+    transform: translateY(-56px);
   }
 }
-.animate-celebration-slide-out {
-  animation: celebration-slide-out 0.3s ease-in forwards;
+.animate-celebration-toast-out {
+  animation: celebration-toast-out 0.4s cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
+/* MessageBubble (components/MessageBubble.tsx): a chat-head-style bubble
+   for a real incoming message, distinct from CelebrationToast on purpose —
+   slides in from the top-right corner (under the header) rather than the
+   bottom, and exits back out to the right instead of straight up, so the
+   two never read as the same kind of thing happening twice. */
+@keyframes message-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+.animate-message-bubble-in {
+  animation: message-bubble-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes message-bubble-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+}
+.animate-message-bubble-out {
+  animation: message-bubble-out 0.3s cubic-bezier(0.4, 0, 1, 1) forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .animate-celebration-burst-in,
   .animate-celebration-float-up,
-  .animate-celebration-fade-out,
-  .animate-celebration-reveal-in,
-  .animate-celebration-slide-out {
+  .animate-celebration-toast-in,
+  .animate-celebration-toast-out,
+  .animate-message-bubble-in,
+  .animate-message-bubble-out {
     animation: none;
   }
 }

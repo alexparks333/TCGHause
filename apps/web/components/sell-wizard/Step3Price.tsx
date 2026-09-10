@@ -2,72 +2,9 @@
 
 import type { FormEvent } from "react";
 import type { WizardData, UpdateField } from "../SellWizard";
-import type { ShippingPreset } from "@/lib/types";
-import { TRACKED_ENVELOPE_CENTS, formatPrice } from "@/lib/types";
+import { formatPrice } from "@/lib/types";
 import MoneyInput from "./MoneyInput";
-
-// Mirrors apps/api/internal/shipping.PackageRequiredCents exactly — $100
-// and up must ship as a tracked package (Shippo), never an envelope
-// (Pitney Bowes' IMb tracking only proves transit, not delivery — not
-// strong enough evidence once real money is at stake). Checked here only
-// as a UX nicety; internal/listing.Create re-validates regardless.
-const PACKAGE_REQUIRED_CENTS = 10000;
-
-const FREE_PRESETS: ShippingPreset[] = ["free_envelope", "free_bubble_mailer", "free_box"];
-
-type PresetOption = {
-  value: ShippingPreset;
-  label: string;
-  description: string;
-  // A rough, non-binding approximation of what the seller will actually
-  // pay for the real label — there's no listing yet at this point in the
-  // wizard to quote a live Shippo rate against (unlike
-  // shippingPreset.estimatedShippingCents, computed once a listing
-  // exists), so these are representative figures from real observed
-  // rates for this weight class, not a live quote. Envelope mirrors
-  // TRACKED_ENVELOPE_CENTS exactly (Pitney Bowes' flat rate doesn't vary
-  // by destination); bubble mailer/box are real USPS Ground Advantage
-  // quotes seen for these parcel sizes (docs/Shipping_Research.md).
-  approxCents: number;
-};
-
-// The three Free Shipping sub-choices — the seller absorbs the real cost,
-// the buyer pays $0, but the buyer still needs to know what's physically
-// coming (a bubble mailer looks and feels different from an envelope).
-// Only shown once "Free Shipping" itself is selected below — picking a
-// packaging without first opting into free shipping doesn't mean
-// anything. Valid on auctions too — see envelopeDisabled's comment for
-// the one case (free_envelope on a high fixed price) that's actually
-// gated.
-// Real quoted range from live USPS Ground Advantage rate-shops at this
-// weight class (docs/Shipping_Research.md, this feature's own testing) —
-// varies by zone/distance, which isn't knowable until a real buyer
-// address exists, so a range is honestly what's available here rather
-// than a single number. The real per-listing estimate (once one's
-// created, see listing.estimatedShippingCents) narrows this to an actual
-// quote.
-const SHIPPO_GROUND_ADVANTAGE_APPROX_RANGE = `~${formatPrice(517)} – ${formatPrice(1000)}`;
-
-const FREE_OPTIONS: PresetOption[] = [
-  {
-    value: "free_bubble_mailer",
-    label: "Bubble Mailer",
-    description: "You cover the cost of a tracked Shippo package.",
-    approxCents: 517,
-  },
-  {
-    value: "free_envelope",
-    label: "Envelope",
-    description: "You cover the cost of a tracked Pitney Bowes envelope.",
-    approxCents: TRACKED_ENVELOPE_CENTS,
-  },
-  {
-    value: "free_box",
-    label: "Box",
-    description: "You cover the cost of a tracked Shippo package.",
-    approxCents: 600,
-  },
-];
+import ShippingPresetPicker from "./ShippingPresetPicker";
 
 export default function Step3Price({
   data,
@@ -91,57 +28,65 @@ export default function Step3Price({
 
   const priceCents = data.format === "fixed" ? Math.round(Number.parseFloat(data.price || "0") * 100) : 0;
   const isFixed = data.format === "fixed";
-  const overPackageThreshold = isFixed && priceCents >= PACKAGE_REQUIRED_CENTS;
 
-  // Only the two envelope-mechanism presets (free_envelope,
-  // tracked_envelope) are ever disabled, and only when a KNOWN fixed
-  // price is already too high — an auction's final price isn't known yet,
-  // so both stay selectable there; the backend resolves the real
-  // mechanism at sale time (shipping.UpgradePreset), upgrading
-  // free_envelope to free_bubble_mailer (still free) or tracked_envelope
-  // to shippo_ground_advantage if the auction closes above $100. Free
-  // shipping itself is valid on auctions too — free_bubble_mailer/free_box
-  // need no gating at all, since they're already package-mechanism at any
-  // price; a seller offering free shipping on an auction that closes high
-  // just absorbs a bigger bill, same as any other "I cover shipping" offer.
-  const envelopeDisabled = overPackageThreshold;
+  // Offers (CLAUDE.md's "allow offers, with a real minimum" ask) only ever
+  // make sense against a real Buy It Now price — a fixed listing always
+  // has one (its own price), an auction only once "Also offer a Buy It Now
+  // price" is turned on above. offersEligible controls whether the section
+  // renders at all (as soon as a BIN price *can* exist, even before a
+  // number's typed in) — gating it on hasBinPrice instead would hide the
+  // whole feature the moment the price field is empty, which reads as "it
+  // doesn't exist" rather than "type a price first." hasBinPrice only
+  // gates the parts that need a real number: the "below $X" copy and the
+  // minimum-offer validation.
+  const offersEligible = isFixed || data.buyItNowEnabled;
+  const binPriceCents = isFixed
+    ? priceCents
+    : data.buyItNowEnabled
+      ? Math.round(Number.parseFloat(data.buyItNowPrice || "0") * 100)
+      : 0;
+  const hasBinPrice = binPriceCents > 0;
 
-  // The top-level "Free Shipping" bubble is a stand-in for all three
-  // free_* presets at once — checked whenever any of them is the current
-  // selection, so switching between the packaging sub-choices doesn't
-  // read as leaving and re-entering "Free Shipping".
-  const isFreeSelected = FREE_PRESETS.includes(data.shippingPreset);
+  // Mirrors internal/listing.Create's own minOfferCents validation — a
+  // minimum offer at or above the Buy It Now price makes no sense (the
+  // buyer would just pay the BIN price instead), so this is caught live
+  // as the seller types rather than only surfacing as a submit-time error
+  // banner. Only evaluated once there's both a real BIN price and a
+  // non-empty minOffer — an empty field isn't "invalid," it just means no
+  // floor was set.
+  const minOfferCents = Math.round(Number.parseFloat(data.minOffer || "0") * 100);
+  const minOfferTooHigh = hasBinPrice && data.minOffer.trim() !== "" && minOfferCents >= binPriceCents;
+
+  // The Signature Required lock's own reference price (ShippingPresetPicker)
+  // — whichever of the auction's starting bid or Buy It Now price is
+  // higher, or the fixed price. Always knowable at listing time, unlike
+  // knownPriceCents below (which stays 0 for an auction on purpose).
+  const startingBidCents =
+    data.format === "auction" ? Math.round(Number.parseFloat(data.startingBid || "0") * 100) : 0;
+  const referencePriceCents = Math.max(startingBidCents, binPriceCents);
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+    <form onSubmit={handleSubmit} className="flex flex-col gap-5">
       <div>
         <h2 className="text-lg font-semibold text-gray-900">Set the price</h2>
         <p className="text-sm text-gray-500">Auction or fixed price, plus shipping.</p>
       </div>
 
-      <div className="flex gap-4 rounded-lg bg-brand-surface p-3">
-        <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-          <input
-            type="radio"
-            checked={data.format === "auction"}
-            onChange={() => update("format", "auction")}
-            className="h-4 w-4 accent-brand-navy"
-          />
-          Auction
-        </label>
-        <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-          <input
-            type="radio"
-            checked={data.format === "fixed"}
-            onChange={() => update("format", "fixed")}
-            className="h-4 w-4 accent-brand-navy"
-          />
-          Buy It Now
-        </label>
+      <div className="grid grid-cols-2 gap-2">
+        <FormatButton
+          label="Auction"
+          selected={data.format === "auction"}
+          onClick={() => update("format", "auction")}
+        />
+        <FormatButton
+          label="Buy It Now"
+          selected={data.format === "fixed"}
+          onClick={() => update("format", "fixed")}
+        />
       </div>
 
-      {data.format === "auction" ? (
-        <>
+      <FormSection title="Price">
+        {data.format === "auction" ? (
           <div className="flex flex-wrap items-start gap-4">
             <MoneyInput
               label="Starting bid"
@@ -166,100 +111,100 @@ export default function Step3Price({
               </select>
             </label>
           </div>
-
-          <div className="rounded-lg border border-gray-200 p-3">
-            <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-              <input
-                type="checkbox"
-                checked={data.buyItNowEnabled}
-                onChange={(e) => update("buyItNowEnabled", e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 accent-brand-navy"
-              />
-              Also offer a Buy It Now price
-            </label>
-            <p className="mt-1 text-xs text-gray-500">
-              Buyers can skip bidding and purchase instantly at this price, any time before the
-              auction ends.
-            </p>
-
-            {data.buyItNowEnabled && (
-              <div className="mt-3">
-                <MoneyInput
-                  label="Buy It Now price"
-                  required
-                  value={data.buyItNowPrice}
-                  onChange={(v) => update("buyItNowPrice", v)}
-                  placeholder="49.99"
-                />
-              </div>
-            )}
-          </div>
-        </>
-      ) : (
-        <MoneyInput
-          label="Price"
-          required
-          value={data.price}
-          onChange={(v) => update("price", v)}
-          placeholder="24.99"
-        />
-      )}
-
-      <div>
-        <p className="text-sm font-medium text-gray-700">How will you ship this?</p>
-
-        <div className="mt-2 flex flex-col gap-2">
-          <PresetRadio
-            label="Free Shipping"
-            description="You pay for shipping — the buyer sees $0."
-            checked={isFreeSelected}
-            disabled={false}
-            onSelect={() => update("shippingPreset", "free_bubble_mailer")}
+        ) : (
+          <MoneyInput
+            label="Price"
+            required
+            value={data.price}
+            onChange={(v) => update("price", v)}
+            placeholder="24.99"
           />
+        )}
+      </FormSection>
 
-          {isFreeSelected && (
-            <div className="ml-4 flex flex-col gap-2 border-l-2 border-gray-200 py-1 pl-4">
-              {FREE_OPTIONS.map((opt) => {
-                const disabled = opt.value === "free_envelope" && overPackageThreshold;
-                return (
-                  <PresetRadio
-                    key={opt.value}
-                    label={opt.label}
-                    description={opt.description}
-                    approxCost={`~${formatPrice(opt.approxCents)}`}
-                    checked={data.shippingPreset === opt.value}
-                    disabled={disabled}
-                    onSelect={() => update("shippingPreset", opt.value)}
-                  />
-                );
-              })}
+      {data.format === "auction" && (
+        <FormSection title="Buy It Now" optional>
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <input
+              type="checkbox"
+              checked={data.buyItNowEnabled}
+              onChange={(e) => update("buyItNowEnabled", e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 accent-brand-navy"
+            />
+            Allow Buy It Now Price
+          </label>
+          <p className="mt-1 text-xs text-gray-500">
+            Buyers can buy it instantly at a set price before the first bid.
+          </p>
+
+          {data.buyItNowEnabled && (
+            <div className="mt-3">
+              <MoneyInput
+                label="Buy It Now price"
+                required
+                value={data.buyItNowPrice}
+                onChange={(v) => update("buyItNowPrice", v)}
+                placeholder="49.99"
+              />
             </div>
           )}
+        </FormSection>
+      )}
 
-          <PresetRadio
-            label="Tracked Envelope"
-            description="Pitney Bowes tracked envelope — the buyer pays this flat rate."
-            approxCost={`~${formatPrice(TRACKED_ENVELOPE_CENTS)}`}
-            checked={data.shippingPreset === "tracked_envelope"}
-            disabled={envelopeDisabled}
-            onSelect={() => update("shippingPreset", "tracked_envelope")}
-          />
-          <PresetRadio
-            label="Shippo Ground Advantage (Tracked Package)"
-            description="Bubble mailer, full tracking. Buyer pays the real rate — shown on your listing once it's live."
-            approxCost={SHIPPO_GROUND_ADVANTAGE_APPROX_RANGE}
-            checked={data.shippingPreset === "shippo_ground_advantage"}
-            disabled={false}
-            onSelect={() => update("shippingPreset", "shippo_ground_advantage")}
-          />
-        </div>
+      {offersEligible && (
+        <FormSection title="Offers" optional>
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <input
+              type="checkbox"
+              checked={data.allowOffers}
+              onChange={(e) => update("allowOffers", e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 accent-brand-navy"
+            />
+            Allow offers{hasBinPrice ? ` below ${formatPrice(binPriceCents)}` : ""}
+          </label>
+          <p className="mt-1 text-xs text-gray-500">
+            Buyers can send a lower offer instead of paying{" "}
+            {hasBinPrice ? formatPrice(binPriceCents) : "your Buy It Now price"} outright.
+          </p>
 
-        <p className="mt-2 text-xs text-gray-400">
-          {overPackageThreshold
-            ? "This price requires a tracked package — envelope options aren't available above $100."
-            : "Sales at $100 or more always ship as a tracked package, and $500 or more requires a signature, regardless of what's picked here — a low starting bid that ends up selling higher will automatically ship at whatever the final price requires."}
-        </p>
-      </div>
+          {data.allowOffers && (
+            <div className="mt-3">
+              <MoneyInput
+                label="Minimum offer (optional)"
+                value={data.minOffer}
+                onChange={(v) => update("minOffer", v)}
+                placeholder="e.g. 45.00"
+                error={
+                  minOfferTooHigh
+                    ? `Must be less than ${formatPrice(binPriceCents)} — that's your Buy It Now price.`
+                    : undefined
+                }
+              />
+              {!minOfferTooHigh && (
+                <p className="mt-1 text-xs text-gray-500">
+                  {hasBinPrice ? (
+                    <>
+                      Offers below this amount can&apos;t be sent at all. Leave blank to consider
+                      any offer under {formatPrice(binPriceCents)}.
+                    </>
+                  ) : (
+                    "Offers below this amount can't be sent at all. Leave blank to consider any offer under your Buy It Now price — set that above first."
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+        </FormSection>
+      )}
+
+      <FormSection title="Shipping">
+        <ShippingPresetPicker
+          value={data.shippingPreset}
+          onChange={(v) => update("shippingPreset", v)}
+          knownPriceCents={isFixed ? priceCents : 0}
+          referencePriceCents={referencePriceCents}
+        />
+      </FormSection>
 
       {error && <p className="text-sm text-brand-urgent">{error}</p>}
 
@@ -273,7 +218,8 @@ export default function Step3Price({
         </button>
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || minOfferTooHigh}
+          title={minOfferTooHigh ? "Fix the minimum offer above before listing" : undefined}
           className="rounded-full bg-brand-gold px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-gold-light disabled:opacity-60"
         >
           {submitting ? "Listing..." : "List it"}
@@ -283,49 +229,60 @@ export default function Step3Price({
   );
 }
 
-function PresetRadio({
-  label,
-  description,
-  approxCost,
-  checked,
-  disabled,
-  onSelect,
+// One visually consistent card per pricing concern (Price, Buy It Now,
+// Offers, Shipping) — each optional/conditional section used to be its own
+// ad hoc box (some bordered, some not) stacked directly on top of the
+// next with no shared rhythm, which read as a long flat pile of unrelated
+// fields rather than a few grouped decisions. `optional` just tags the
+// header for sections that aren't part of every listing (Buy It Now,
+// Offers) so a seller skimming the page can tell at a glance which
+// sections apply only if they opt in.
+function FormSection({
+  title,
+  optional,
+  children,
 }: {
-  label: string;
-  description: string;
-  // Shown to the right of the label — a rough "here's what this will
-  // probably cost you" figure, not the buyer-facing price (these are all
-  // free-shipping sub-choices; the buyer always sees $0 regardless).
-  approxCost?: string;
-  checked: boolean;
-  disabled: boolean;
-  onSelect: () => void;
+  title: string;
+  optional?: boolean;
+  children: React.ReactNode;
 }) {
   return (
-    <label
-      className={`flex items-start gap-3 rounded-lg border p-3 transition-colors ${
-        disabled
-          ? "cursor-not-allowed border-gray-100 opacity-50"
-          : checked
-            ? "cursor-pointer border-brand-navy bg-brand-navy/5"
-            : "cursor-pointer border-gray-200 hover:bg-brand-surface"
+    <section className="rounded-xl border border-gray-200 p-4">
+      <h3 className="text-sm font-semibold text-gray-900">
+        {title}
+        {optional && <span className="ml-1.5 font-normal text-gray-400">(optional)</span>}
+      </h3>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
+// Replaces the old cramped inline radio pair with two equal-width buttons
+// — this is the single most important choice on the whole step (it
+// determines which of the sections below even apply), so it gets more
+// visual weight than a plain radio row would give it.
+function FormatButton({
+  label,
+  selected,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={selected}
+      className={`rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${
+        selected
+          ? "border-brand-navy bg-brand-navy text-white"
+          : "border-gray-200 bg-white text-gray-700 hover:bg-brand-surface"
       }`}
     >
-      <input
-        type="radio"
-        checked={checked}
-        disabled={disabled}
-        onChange={onSelect}
-        className="mt-0.5 h-4 w-4 accent-brand-navy"
-      />
-      <span className="flex-1">
-        <span className="flex items-baseline justify-between gap-2">
-          <span className="text-sm font-semibold text-gray-900">{label}</span>
-          {approxCost && <span className="text-xs font-medium text-gray-500">{approxCost}</span>}
-        </span>
-        <span className="block text-xs text-gray-500">{description}</span>
-      </span>
-    </label>
+      {label}
+    </button>
   );
 }
 

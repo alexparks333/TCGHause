@@ -11,6 +11,7 @@ import (
 
 	"auctionhous-tcg/api/internal/platform"
 	"auctionhous-tcg/api/internal/shipping"
+	"auctionhous-tcg/api/internal/user"
 )
 
 // HandleCreate requires auth — the listing's seller is the caller's JWT
@@ -70,6 +71,74 @@ func HandleGet(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(lst)
+	}
+}
+
+// HandleUpdate serves PATCH /listings/{id} — the Selling page's "Edit
+// Listing." Only ever touches UpdateInput's field set (price, starting bid,
+// shipping preset, offers — see its own doc comment for exactly which of
+// those apply depending on format/bid state); the card identity (title,
+// game, set, condition, photos) is immutable through this endpoint by
+// construction — there's no code path here that could even accidentally
+// write to those.
+func HandleUpdate(pool *pgxpool.Pool, shippoClient *shipping.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sellerID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var in UpdateInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		lst, err := Update(r.Context(), pool, r.PathValue("id"), sellerID, in, shippoClient)
+		if err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, ErrNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, ErrNotOwner):
+				status = http.StatusForbidden
+			case errors.Is(err, ErrInvalidInput):
+				status = http.StatusBadRequest
+			case errors.Is(err, ErrNotActive), errors.Is(err, ErrHasBids):
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(lst)
+	}
+}
+
+// HandlePhotoHistory serves GET /listings/{id}/photo-history — admin-only
+// (same ADMIN_EMAILS allowlist as internal/dispute's admin handlers), never
+// the listing's own seller or buyer, since the entire point is giving a
+// neutral reviewer visibility a participant shouldn't get to suppress.
+// Backs the admin claim detail page's photo-edit timeline (CLAUDE.md's
+// "keep a log for claim review" requirement) — see PhotoHistory's own doc
+// comment for what each entry records.
+func HandlePhotoHistory(pool *pgxpool.Pool, adminEmails string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		callerID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !user.IsAdmin(r.Context(), pool, adminEmails, callerID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		history, err := PhotoHistory(r.Context(), pool, r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(history)
 	}
 }
 

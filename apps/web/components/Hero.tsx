@@ -23,12 +23,12 @@ export default function Hero({
 }) {
   const rate = sellerTierRate(tier ?? "new");
   const tierIcon = tier ? sellerTierIconSrc(tier) : null;
-  // Only "Haus Trusted Seller" is long enough to need splitting — every
+  // Only "Hous Trusted Seller" is long enough to need splitting — every
   // other tier's label (New/Bronze/Silver/Gold Seller) reads fine on one
   // line next to the 40px icon, per product decision.
   const tierLabel = formatSellerTier(tier ?? "new");
-  const tierLabelLine1 = tier === "haus_trust" ? "Haus Trusted" : tierLabel;
-  const tierLabelLine2 = tier === "haus_trust" ? "Seller" : "";
+  const tierLabelLine1 = tier === "hous_trust" ? "Hous Trusted" : tierLabel;
+  const tierLabelLine2 = tier === "hous_trust" ? "Seller" : "";
   return (
     <section className="bg-gradient-to-br from-brand-navy via-brand-navy-light to-slate-800 text-white">
       <div className="grid gap-10 px-10 py-8 sm:px-12 lg:grid-cols-2 lg:items-center lg:px-14 lg:py-10">

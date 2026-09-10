@@ -373,6 +373,14 @@ export default function ProfileEditor({
   const columnWidthRef = useRef(413);
   const router = useRouter();
   const editable = isOwner && editMode;
+  // Every listing this component ever receives belongs to profile.id (the
+  // page fetches with sellerId: profile.id) — so when the viewer IS this
+  // profile, profile.id is also their own id, and passing it as
+  // currentUserId is exactly the comparison ListingCard/ListingRow need to
+  // hide Buy It Now/Make an Offer on the owner's own listings. When the
+  // viewer isn't the owner, none of these listings can be theirs regardless
+  // of who they are, so there's nothing to compare against.
+  const currentUserId = isOwner ? profile.id : undefined;
 
   // ---- painting (see components/profile/paint/) ------------------------
   const [savedCanvas, setSavedCanvas] = useState(profile.profileCanvas);
@@ -1184,7 +1192,12 @@ export default function ProfileEditor({
                     w.type === "listings" ? (
                       <div key={w.id} className="animate-canvas-hint-pulse col-span-3">
                         <div className="rounded-2xl border-2 border-dashed border-brand-gold/60 bg-brand-gold/5 p-5 sm:p-6">
-                          <ListingsWidget listings={listings} watchedIds={watchedIds} isLoggedIn={isLoggedIn} />
+                          <ListingsWidget
+                listings={listings}
+                watchedIds={watchedIds}
+                isLoggedIn={isLoggedIn}
+                currentUserId={currentUserId}
+              />
                         </div>
                       </div>
                     ) : (
@@ -1212,6 +1225,7 @@ export default function ProfileEditor({
                       listings={listings}
                       watchedIds={watchedIds}
                       isLoggedIn={isLoggedIn}
+                      currentUserId={currentUserId}
                       stackOrderKey={stackOrderKey}
                       widgetNodesRef={widgetNodesRef}
                       onRemove={() => removeWidget(w.id)}
@@ -1231,6 +1245,7 @@ export default function ProfileEditor({
             listings={listings}
             watchedIds={watchedIds}
             isLoggedIn={isLoggedIn}
+            currentUserId={currentUserId}
             dirty={dirty}
             saving={saving}
             error={error}
@@ -1295,6 +1310,7 @@ export default function ProfileEditor({
           listings={listings}
           watchedIds={watchedIds}
           isLoggedIn={isLoggedIn}
+          currentUserId={currentUserId}
           pointerPos={pointerPos}
           columnWidth={columnWidthRef.current}
         />
@@ -1314,6 +1330,7 @@ export default function ProfileEditor({
           listings={listings}
           watchedIds={watchedIds}
           isLoggedIn={isLoggedIn}
+          currentUserId={currentUserId}
           pointerPos={pointerPos}
           columnWidth={columnWidthRef.current}
         />
@@ -1473,6 +1490,7 @@ function SortableWidget({
   listings,
   watchedIds,
   isLoggedIn,
+  currentUserId,
   stackOrderKey,
   widgetNodesRef,
   onRemove,
@@ -1483,6 +1501,7 @@ function SortableWidget({
   listings: Listing[];
   watchedIds: Set<string>;
   isLoggedIn: boolean;
+  currentUserId?: string;
   // The current arrangement, as a string (see ProfileEditor's own
   // stackOrderKey) — the reflow effect below depends on this, not on
   // "every render," so it only actually re-evaluates when the
@@ -1612,7 +1631,12 @@ function SortableWidget({
   // hole in the grid instead of reserving its cell.
   const content =
     widget.type === "listings" ? (
-      <ListingsWidget listings={listings} watchedIds={watchedIds} isLoggedIn={isLoggedIn} />
+      <ListingsWidget
+        listings={listings}
+        watchedIds={watchedIds}
+        isLoggedIn={isLoggedIn}
+        currentUserId={currentUserId}
+      />
     ) : widget.type === "favorite_card" ? (
       <FavoriteCardWidget card={widget.favoriteCard} editable={editable} />
     ) : widget.type === "empty_space" ? (
@@ -1775,6 +1799,7 @@ function DragPreviewBox({
   listings,
   watchedIds,
   isLoggedIn,
+  currentUserId,
   pointerPos,
   columnWidth,
 }: {
@@ -1783,6 +1808,7 @@ function DragPreviewBox({
   listings: Listing[];
   watchedIds: Set<string>;
   isLoggedIn: boolean;
+  currentUserId?: string;
   pointerPos: { x: number; y: number };
   // The real, live-measured single-column width (see columnWidthRef) —
   // threaded in rather than read from a module constant so the preview
@@ -1817,7 +1843,12 @@ function DragPreviewBox({
         </div>
       ) : (
         <div className="pointer-events-none origin-top-left" style={{ width: virtualWidth, transform: `scale(${scale})` }}>
-          <ListingsWidget listings={listings} watchedIds={watchedIds} isLoggedIn={isLoggedIn} />
+          <ListingsWidget
+            listings={listings}
+            watchedIds={watchedIds}
+            isLoggedIn={isLoggedIn}
+            currentUserId={currentUserId}
+          />
         </div>
       )}
     </div>

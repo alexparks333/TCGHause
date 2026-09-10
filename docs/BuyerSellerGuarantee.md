@@ -84,7 +84,7 @@ created → payment_pending → paid → awaiting_ship → shipped → delivered
                                     ┌───────────────────┴──────────────┐
                                     ▼                                  ▼
                               claim_window                       released
-                              (standard sellers)              (Gold/Haus Trust:
+                              (standard sellers)              (Gold/Hous Trust:
                                     │                          instant on scan)
                        ┌────────────┴────────────┐
                        ▼                          ▼
@@ -104,7 +104,7 @@ Money-relevant timers actually running today (`cmd/worker/order_timers.go`,
 | **Ship deadline** | 72h in `awaiting_ship` with no tracking uploaded | Auto-cancel, full refund | `order_timers.go:46-55` |
 | **No-scan refund** | 21 days in `shipped` with no delivery scan | Auto-refund (protects buyer from a lost/never-shipped package with a dead tracking number) | `order_timers.go:89-95` |
 | **Claim window** | Delivery confirmed | 3 days (orders **under $250**) or 7 days (**$250+**) before auto-release, unless a claim is filed first | `order/fulfillment.go:147-215`, threshold `highValueThresholdCents = 25000` |
-| **Trusted release** | Delivery confirmed, seller is Gold or Haus Trust tier | Skips the claim window entirely — released the instant the carrier scans it delivered | `order/fulfillment.go:179-203` — **currently dead in practice, see §6.1** |
+| **Trusted release** | Delivery confirmed, seller is Gold or Hous Trust tier | Skips the claim window entirely — released the instant the carrier scans it delivered | `order/fulfillment.go:179-203` — **currently dead in practice, see §6.1** |
 | **Negotiation → escalation** | 48h in a claim's `negotiating` state with no resolution | Auto-escalates to auto-adjudication or human review | `claim_timer.go:15-17` |
 
 These numbers **do not match `docs/design-doc.md` §3** (24h tracked / 6-business-day
@@ -226,7 +226,7 @@ This side gets less attention in the existing docs but the mechanics are real:
 - **Signature confirmation above $500** (`internal/shipping/tier.go:37-52`) —
   stricter than eBay's $750 line, gives an objective delivery-confirmation bar for
   exactly the claims most likely to be contested (high-value slabs).
-- **Trusted-tier instant release** — Gold/Haus Trust sellers skip the claim window
+- **Trusted-tier instant release** — Gold/Hous Trust sellers skip the claim window
   entirely. **This currently never fires for anyone** (§6.1) but the mechanism is
   real and wired, waiting only on the tier-promotion job.
 - **Partial-refund tool** — either side can propose "keep it, take X% back"
@@ -305,7 +305,7 @@ framing.
 >   automatically go against you.
 > - Every decision — automated or human — comes with one appeal to a different
 >   reviewer before it's final.
-> - Reach Gold or Haus Trust tier and skip the claim window entirely: paid the
+> - Reach Gold or Hous Trust tier and skip the claim window entirely: paid the
 >   instant the carrier scans your package delivered.
 
 **This copy assumes §6's gaps get closed before it goes live** — in particular, the
@@ -317,7 +317,7 @@ once tier promotion actually runs (§6.1).
 
 ## 6. Gaps to close before this is safe to publish as-is
 
-### 6.1 Tier promotion doesn't exist yet, so "Gold/Haus Trust" benefits never trigger
+### 6.1 Tier promotion doesn't exist yet, so "Gold/Hous Trust" benefits never trigger
 
 `seller.CurrentTier` always returns `'new'` — there's no promotion/demotion job
 (`internal/seller/tier.go:38-45`'s own comment: "Phase 7 scope, not built yet").

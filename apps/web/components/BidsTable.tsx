@@ -3,33 +3,29 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { MyBid } from "@/lib/types";
-import { formatPrice, formatTimeLeft, isAwaitingPayment, paymentDueAt } from "@/lib/types";
+import { formatPrice, formatTimeLeft, hasBidEnded, isAwaitingPayment, paymentDueAt } from "@/lib/types";
 import PaymentCountdown from "./PaymentCountdown";
 
-// variant (not a badge callback) because this is a Client Component (the
-// whole-row onClick below needs a router) — Server Components can't pass
-// functions as props across that boundary, only serializable values like
-// this string. Both variants derive "won" from bid.status identically,
-// only the label text differs, so a plain lookup is enough.
+// Per-row, not a table-wide setting — a single merged list (BidsOffersApp)
+// mixes still-open and closed auctions together sorted by time-to-close,
+// so whether a given row reads "Winning/Outbid" or "Won/Lost" has to be
+// derived from that row's own hasBidEnded(bid), not a blanket prop the
+// caller picks once for the whole table.
 const BADGE_LABEL: Record<"active" | "ended", Record<MyBid["status"], string>> = {
   active: { winning: "Winning", outbid: "Outbid" },
   ended: { winning: "Won", outbid: "Lost" },
 };
 
 // ~12 rows worth (header ~41px + 12 * ~44px body rows) before the table
-// scrolls internally instead of the page just growing forever — the
-// Ended section on Bids/Offers is the one meant to use this, since it
-// only ever grows.
+// scrolls internally instead of the page just growing forever.
 const SCROLLABLE_MAX_HEIGHT = "max-h-[560px]";
 
 export default function BidsTable({
   items,
-  variant,
-  emptyMessage = "You don't have any active bids or offers.",
+  emptyMessage = "You don't have any active bids.",
   scrollable = false,
 }: {
   items: MyBid[];
-  variant: "active" | "ended";
   emptyMessage?: string;
   scrollable?: boolean;
 }) {
@@ -40,7 +36,7 @@ export default function BidsTable({
   }
 
   return (
-    <div className="mt-4 overflow-hidden rounded-xl border border-brand-border bg-white">
+    <div className="overflow-hidden rounded-xl border border-brand-border bg-white">
       <div className={scrollable ? `${SCROLLABLE_MAX_HEIGHT} overflow-y-auto` : ""}>
         <table className="w-full text-sm">
           <thead>
@@ -66,19 +62,12 @@ export default function BidsTable({
             {items.map((bid) => {
               const { listing, myMaxBidCents } = bid;
               const won = bid.status === "winning";
-              // Only meaningful in the Active section — a won-but-unpaid
-              // auction stays there instead of Ended (lib/types.ts's
-              // hasBidEnded), specifically so there's still something
-              // actionable to click.
-              const awaitingPayment = variant === "active" && isAwaitingPayment(bid);
-              // "Pay Now" here, not "Awaiting Payment" — this table is
-              // always the buyer's own Bids/Offers view, so it's always
-              // THEM who owes the payment, not someone they're waiting on.
-              // "Awaiting payment" is reserved for the seller's side
-              // (app/account/selling/page.tsx's ListingGrid badge), where
-              // it's genuinely accurate — the seller is waiting on the
-              // buyer's Stripe checkout, not the other way around.
-              const label = awaitingPayment ? "Pay Now" : BADGE_LABEL[variant][bid.status];
+              const ended = hasBidEnded(bid);
+              // A won-but-unpaid auction stays actionable ("Pay Now")
+              // rather than reading as a plain "Won" — there's still
+              // something the buyer needs to do.
+              const awaitingPayment = !ended && isAwaitingPayment(bid);
+              const label = awaitingPayment ? "Pay Now" : BADGE_LABEL[ended ? "ended" : "active"][bid.status];
               const href = awaitingPayment ? `/checkout/${listing.id}` : `/listing/${listing.id}`;
               const dueAt = awaitingPayment ? paymentDueAt(listing) : undefined;
               return (

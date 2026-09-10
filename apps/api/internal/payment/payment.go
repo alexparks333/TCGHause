@@ -21,9 +21,30 @@ package payment
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/stripe/stripe-go/v82"
 )
+
+// shippingMetadata is shared by CreateIntent/CreateAchIntent — shipping_cents
+// and signature_required ride along on the PaymentIntent itself so the
+// exact number the buyer was actually charged/authorized for shipping (a
+// live Shippo quote, when one was possible — see
+// internal/shipping.ChargedCentsLive) survives intact through to
+// createOrderRecord (internal/auction/buynow.go), which reads it back off
+// this same metadata rather than recomputing a fresh (and potentially
+// different, if carrier rates moved) quote after the fact. Recomputing
+// post-payment would risk the order's own recorded numbers drifting from
+// what Stripe actually captured — exactly the kind of money-correctness
+// gap CLAUDE.md §5.3 flags for anything that moves real funds.
+func shippingMetadata(listingID, buyerID string, shippingCents int64, signatureRequired bool) map[string]string {
+	return map[string]string{
+		"listing_id":         listingID,
+		"buyer_id":           buyerID,
+		"shipping_cents":     strconv.FormatInt(shippingCents, 10),
+		"signature_required": strconv.FormatBool(signatureRequired),
+	}
+}
 
 // Client is nil when STRIPE_SECRET_KEY isn't set — same graceful-
 // degradation pattern as Supabase (CLAUDE.md §6.12): callers check
@@ -74,16 +95,13 @@ func (c *Client) IsConfigured() bool {
 // doc v2 §2.7 says must never be ambiguous. Pinning this the same way
 // CreateAchIntent already pins itself to "us_bank_account" keeps the two
 // rails' Payment Elements strictly non-overlapping.
-func (c *Client) CreateIntent(ctx context.Context, listingID, buyerID string, amountCents int64, paymentMethodID, customerID string) (pi *stripe.PaymentIntent, err error) {
+func (c *Client) CreateIntent(ctx context.Context, listingID, buyerID string, amountCents int64, paymentMethodID, customerID string, shippingCents int64, signatureRequired bool) (pi *stripe.PaymentIntent, err error) {
 	params := &stripe.PaymentIntentCreateParams{
 		Amount:             stripe.Int64(amountCents),
 		Currency:           stripe.String(string(stripe.CurrencyUSD)),
 		CaptureMethod:      stripe.String(string(stripe.PaymentIntentCaptureMethodManual)),
 		PaymentMethodTypes: []*string{stripe.String("card")},
-		Metadata: map[string]string{
-			"listing_id": listingID,
-			"buyer_id":   buyerID,
-		},
+		Metadata:           shippingMetadata(listingID, buyerID, shippingCents, signatureRequired),
 	}
 	if paymentMethodID != "" {
 		params.PaymentMethod = stripe.String(paymentMethodID)
@@ -134,15 +152,12 @@ func (c *Client) CreateIntent(ctx context.Context, listingID, buyerID string, am
 // Created on the PLATFORM account, same reasoning as CreateIntent above —
 // no connected-account context, no cloning, the buyer's own saved bank
 // account is charged directly.
-func (c *Client) CreateAchIntent(ctx context.Context, listingID, buyerID string, amountCents int64, paymentMethodID, customerID string) (pi *stripe.PaymentIntent, err error) {
+func (c *Client) CreateAchIntent(ctx context.Context, listingID, buyerID string, amountCents int64, paymentMethodID, customerID string, shippingCents int64, signatureRequired bool) (pi *stripe.PaymentIntent, err error) {
 	params := &stripe.PaymentIntentCreateParams{
 		Amount:             stripe.Int64(amountCents),
 		Currency:           stripe.String(string(stripe.CurrencyUSD)),
 		PaymentMethodTypes: []*string{stripe.String("us_bank_account")},
-		Metadata: map[string]string{
-			"listing_id": listingID,
-			"buyer_id":   buyerID,
-		},
+		Metadata:           shippingMetadata(listingID, buyerID, shippingCents, signatureRequired),
 	}
 	if paymentMethodID != "" {
 		params.PaymentMethod = stripe.String(paymentMethodID)

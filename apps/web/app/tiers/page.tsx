@@ -31,6 +31,7 @@ const TIERS = [
     tier: "bronze" as const,
     rate: "6.50%",
     requirement: "15–49 completed orders",
+    reviewRequirement: "5+ reviews, 4.0★ avg to unlock",
     accent: "text-[#a8672f]",
   },
   {
@@ -38,6 +39,7 @@ const TIERS = [
     tier: "silver" as const,
     rate: "6.25%",
     requirement: "50–149 completed orders",
+    reviewRequirement: "15+ reviews, 4.3★ avg to unlock",
     accent: "text-slate-500",
   },
   {
@@ -45,7 +47,7 @@ const TIERS = [
     tier: "gold" as const,
     rate: "6.00%",
     requirement: "150–499 completed orders",
-    featured: true,
+    reviewRequirement: "40+ reviews, 4.5★ avg to unlock",
     accent: "text-brand-gold",
   },
   {
@@ -53,24 +55,25 @@ const TIERS = [
     tier: "platinum" as const,
     rate: "5.50%",
     requirement: "500+ completed orders",
+    reviewRequirement: "100+ reviews, 4.5★ avg to unlock",
     accent: "text-[#8a8f98]",
   },
   {
-    name: "Haus Trust",
-    tier: "haus_trust" as const,
+    name: "Hous Trust",
+    tier: "hous_trust" as const,
     rate: "Custom",
     requirement: "Platinum + application, by invitation",
     accent: "text-sky-600",
   },
 ];
 
-// The fee explorer below can't do live math against "Custom" — Haus
+// The fee explorer below can't do live math against "Custom" — Hous
 // Trust's rate is negotiated per seller, there's no one number to plug
 // in — so it only ever gets the tiers with a real, fixed percentage.
 // TierFeeExplorer's own fallback (tiers[0] when the selected/initial tier
-// isn't in the list) means a Haus Trust viewer just lands on New here,
+// isn't in the list) means a Hous Trust viewer just lands on New here,
 // same as anyone else visiting the page logged out.
-const EXPLORABLE_TIERS = TIERS.filter((t) => t.tier !== "haus_trust");
+const EXPLORABLE_TIERS = TIERS.filter((t) => t.tier !== "hous_trust");
 
 export default async function TiersPage() {
   // Same session-then-tier read as Header (and both are cache()-wrapped,
@@ -82,6 +85,12 @@ export default async function TiersPage() {
   const { session } = isSupabaseConfigured() ? await getCurrentSession() : { session: null };
   const me = session ? await getMe(session.access_token).catch(() => null) : null;
   const myTier = me?.tier ?? "new";
+  // Distinct from myTier above: myTier always falls back to "new" so
+  // TierFeeExplorer has something to pre-select even logged out. Highlighting
+  // a card needs the opposite default — an anonymous visitor isn't "New",
+  // they're not signed in at all, so only highlight a row once we've
+  // actually confirmed the viewer's real tier from the API.
+  const highlightTier = me?.tier ?? null;
 
   return (
     <div className="flex min-h-screen flex-col bg-brand-surface">
@@ -109,7 +118,7 @@ export default async function TiersPage() {
           <span className="font-semibold text-brand-gold">Gold</span> (6% + $0.30);{" "}
           <span className="font-semibold text-[#8a8f98]">Platinum</span> earns{" "}
           <span className="font-semibold text-[#8a8f98]">5.50%</span> automatically the same way.{" "}
-          <span className="font-semibold text-sky-600">Haus Trust</span> is different — an
+          <span className="font-semibold text-sky-600">Hous Trust</span> is different — an
           invitation-only application for Platinum sellers, with a rate we negotiate individually
           based on what you sell.
         </p>
@@ -121,11 +130,12 @@ export default async function TiersPage() {
         <ul className="mt-8 flex flex-col gap-3">
           {TIERS.map((t, i) => {
             const icon = sellerTierIconSrc(t.tier);
+            const isCurrent = t.tier === highlightTier;
             return (
               <li
                 key={t.name}
                 className={`group flex items-center gap-5 rounded-2xl bg-white p-4 shadow-sm ring-1 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg sm:p-5 ${
-                  t.featured ? "ring-brand-gold/40" : "ring-brand-border"
+                  isCurrent ? "ring-2 ring-brand-gold bg-brand-gold/[0.06]" : "ring-brand-border"
                 }`}
                 style={{
                   animation: "tierRowIn 0.5s ease forwards",
@@ -167,8 +177,18 @@ export default async function TiersPage() {
 
                 <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1">
                   <div className="min-w-0">
-                    <p className="text-base font-bold text-gray-900">{t.name}</p>
+                    <p className="flex items-center gap-2 text-base font-bold text-gray-900">
+                      {t.name}
+                      {isCurrent && (
+                        <span className="rounded-full bg-brand-gold px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                          Your tier
+                        </span>
+                      )}
+                    </p>
                     <p className="text-xs text-gray-500">{t.requirement}</p>
+                    {"reviewRequirement" in t && (
+                      <p className="text-xs text-gray-400">{t.reviewRequirement}</p>
+                    )}
                   </div>
                   <p className={`text-xl font-extrabold ${t.accent}`}>
                     {t.rate}
@@ -198,7 +218,10 @@ export default async function TiersPage() {
         <p className="mt-6 text-xs text-gray-400">
           Cancelled and refunded orders never count toward your order total. Promotion also
           requires a trailing-90-day dispute rate under 2%, no unresolved claim older than 7
-          days, and an account at least 14 days old.
+          days, an account at least 14 days old, and the review count/rating floor shown above
+          for the tier you&apos;re moving into — the average blends all three rating axes
+          (condition accuracy, shipping speed, trustworthiness) across every review you&apos;ve
+          ever received, not just recent ones.
         </p>
       </main>
       <Footer />

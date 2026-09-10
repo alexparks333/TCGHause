@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"auctionhous-tcg/api/pkg/money"
 )
 
 var (
@@ -32,33 +34,77 @@ type Counterpart struct {
 // from whichever listing it was started from — omitted entirely (nil) for
 // a thread started from a seller's profile page rather than a listing.
 type ThreadListing struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// Game backs the frontend's gradient placeholder (ListingImage/CardArt)
+	// when ImageURL is empty — a dev quick-list listing with no real photo,
+	// most often — only ever populated by GetThreadDetail (the one place
+	// this actually renders a thumbnail); left blank elsewhere.
+	Game     string `json:"game,omitempty"`
 	ImageURL string `json:"imageUrl,omitempty"`
+}
+
+// OfferSummary is the live state of the offer a kind="offer" Message
+// points at — always re-read fresh from the offers table on every fetch
+// (never frozen at message-creation time), so accepting/declining it from
+// the listing page or Bids/Offers is reflected here the next time this
+// thread is fetched, exactly as if it had been accepted/declined from this
+// same message. BuyerID/SellerID (not just "mine"/"theirs") are included
+// because a thread is per pair-of-users, not per listing — the same two
+// people could in principle be buyer and seller of each other's listings
+// across different offers in one conversation, so which side of THIS
+// specific offer the viewer is on can't be inferred from who sent the
+// message alone.
+type OfferSummary struct {
+	ID           string `json:"id"`
+	ListingID    string `json:"listingId"`
+	ListingTitle string `json:"listingTitle"`
+	// ListingGame backs the frontend's gradient placeholder (ListingImage/
+	// CardArt) when ListingImageURL is empty, same reasoning as
+	// ThreadListing.Game.
+	ListingGame     string `json:"listingGame"`
+	ListingImageURL string `json:"listingImageUrl,omitempty"`
+	BuyerID         string `json:"buyerId"`
+	SellerID        string `json:"sellerId"`
+	AmountCents     int64  `json:"amountCents"`
+	Status          string `json:"status"`
 }
 
 // Message is one row in a thread, always rendered against the viewer's own
 // id client-side to decide left/right alignment — there is no
 // viewer-relative field here, same "just the facts" shape as Notification.
+// Kind is "text" for an ordinary message or "offer" for one posted by
+// internal/offer.Submit (CreateOfferMessage below) — Offer is only ever
+// set alongside kind="offer". Body is always populated even for an offer
+// message (a plain-text summary), so a client that doesn't render kind
+// specially, or the thread list's last-message preview, still shows
+// something sensible.
 type Message struct {
-	ID        string `json:"id"`
-	ThreadID  string `json:"threadId"`
-	SenderID  string `json:"senderId"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"createdAt"`
+	ID        string        `json:"id"`
+	ThreadID  string        `json:"threadId"`
+	SenderID  string        `json:"senderId"`
+	Body      string        `json:"body"`
+	Kind      string        `json:"kind"`
+	Offer     *OfferSummary `json:"offer,omitempty"`
+	CreatedAt string        `json:"createdAt"`
 }
 
 // ThreadSummary backs the inbox list — one row per conversation, with
 // enough denormalized state (last message, unread) to render the whole
 // list without an N+1 per thread.
 type ThreadSummary struct {
-	ID                string         `json:"id"`
-	Counterpart       Counterpart    `json:"counterpart"`
-	Listing           *ThreadListing `json:"listing,omitempty"`
-	LastMessageBody   string         `json:"lastMessageBody"`
-	LastMessageAt     string         `json:"lastMessageAt"`
-	LastMessageIsMine bool           `json:"lastMessageIsMine"`
-	Unread            bool           `json:"unread"`
+	ID          string         `json:"id"`
+	Counterpart Counterpart    `json:"counterpart"`
+	Listing     *ThreadListing `json:"listing,omitempty"`
+	// LastMessageKind is "offer" or "text" — re-read live from the actual
+	// last message row (never the denormalized last_message_preview text
+	// alone), so the inbox list can render a real "Sent/Received an Offer"
+	// pill for an offer instead of just its plain-text fallback body.
+	LastMessageKind   string `json:"lastMessageKind"`
+	LastMessageBody   string `json:"lastMessageBody"`
+	LastMessageAt     string `json:"lastMessageAt"`
+	LastMessageIsMine bool   `json:"lastMessageIsMine"`
+	Unread            bool   `json:"unread"`
 }
 
 // ThreadDetail is a single conversation's full message history plus the
@@ -154,6 +200,92 @@ func StartThreadWithMessage(ctx context.Context, pool *pgxpool.Pool, senderID, r
 	return GetThreadDetail(ctx, pool, senderID, threadID)
 }
 
+// CreateOfferMessage posts offerID as a native "offer" message into the
+// real conversation between its buyer and seller — found or created
+// exactly like StartThreadWithMessage, called by internal/offer.Submit
+// right after an offer is recorded so it shows up in the thread between
+// the two people it actually concerns, not just on the listing page and
+// Bids/Offers. listingID is only recorded on the thread if this is its
+// first-ever message (startOrGetThread's own rule), same as a regular
+// "Message Seller" click. The body is a plain-text fallback (used by
+// clients that don't render kind="offer" specially, and by the thread
+// list's last-message preview) — the actual amount/status a viewer sees is
+// always re-derived live via OfferSummary, never frozen here.
+func CreateOfferMessage(ctx context.Context, pool *pgxpool.Pool, buyerID, sellerID, offerID, listingID string, amountCents int64, listingTitle string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	threadID, err := startOrGetThread(ctx, tx, buyerID, sellerID, &listingID)
+	if err != nil {
+		return err
+	}
+
+	body := fmt.Sprintf("Sent an offer: %s on %s", money.Cents(amountCents), listingTitle)
+	var createdAt time.Time
+	if err := tx.QueryRow(ctx, `
+		insert into messages (thread_id, sender_id, body, kind, offer_id)
+		values ($1, $2, $3, 'offer', $4)
+		returning created_at
+	`, threadID, buyerID, body, offerID).Scan(&createdAt); err != nil {
+		return fmt.Errorf("insert offer message: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		update message_threads
+		set last_message_at = $2, last_message_preview = $3, last_message_sender_id = $4
+		where id = $1
+	`, threadID, createdAt, previewOf(body), buyerID); err != nil {
+		return fmt.Errorf("touch thread: %w", err)
+	}
+
+	// Sending an offer is, from the buyer's own point of view, always
+	// "read" — same reasoning as insertMessageReturning's own call below.
+	if err := markReadTx(ctx, tx, threadID, buyerID); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// ReviseOfferMessage is what internal/offer.Submit calls instead of
+// CreateOfferMessage when a buyer revises their own still-pending offer —
+// the offer row itself is updated in place (same id), and this moves its
+// one existing message to match: re-touches its body (the plain-text
+// fallback) and bumps its created_at to now, so it re-sorts to the bottom
+// of the thread as the freshest activity, exactly where a real new message
+// would land — and bumps the thread's own last-message fields the same
+// way, so the seller's inbox surfaces it as unread/most-recent too.
+// Deliberately does NOT insert a second message row or a second
+// offer_received notification: that's the flooding this whole "revise in
+// place" design exists to avoid — one buyer reconsidering their number
+// several times should still only ever show up as one live ask, not a
+// growing stack of them.
+func ReviseOfferMessage(ctx context.Context, pool *pgxpool.Pool, offerID, buyerID string, amountCents int64, listingTitle string) error {
+	body := fmt.Sprintf("Sent an offer: %s on %s", money.Cents(amountCents), listingTitle)
+
+	var threadID string
+	if err := pool.QueryRow(ctx, `
+		update messages set body = $1, created_at = now()
+		where offer_id = $2
+		returning thread_id
+	`, body, offerID).Scan(&threadID); err != nil {
+		return fmt.Errorf("touch offer message: %w", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		update message_threads
+		set last_message_at = now(), last_message_preview = $2, last_message_sender_id = $3
+		where id = $1
+	`, threadID, previewOf(body), buyerID); err != nil {
+		return fmt.Errorf("touch thread: %w", err)
+	}
+
+	return nil
+}
+
 // SendMessage appends to an existing thread — verifies the caller is
 // actually one of its two participants (never trust the id in the URL
 // alone), same defense-in-depth shape as watchlist/order's ownership
@@ -235,6 +367,7 @@ func insertMessageReturning(ctx context.Context, tx pgx.Tx, threadID, senderID, 
 	if err != nil {
 		return nil, fmt.Errorf("insert message: %w", err)
 	}
+	m.Kind = "text"
 	m.CreatedAt = createdAt.Format(time.RFC3339)
 
 	if _, err := tx.Exec(ctx, `
@@ -301,17 +434,18 @@ func GetThreadDetail(ctx context.Context, pool *pgxpool.Pool, userID, threadID s
 	var counterpartUsername *string
 	var listingID *string
 	var listingTitle *string
+	var listingGame *string
 	var listingImageURLs []string
 	err := pool.QueryRow(ctx, `
 		select
 			case when t.participant_one = $2 then t.participant_two else t.participant_one end,
 			cu.username,
-			l.id, l.title, l.image_urls
+			l.id, l.title, l.game, l.image_urls
 		from message_threads t
 		join users cu on cu.id = case when t.participant_one = $2 then t.participant_two else t.participant_one end
 		left join listings l on l.id = t.listing_id
 		where t.id = $1 and (t.participant_one = $2 or t.participant_two = $2)
-	`, threadID, userID).Scan(&counterpartID, &counterpartUsername, &listingID, &listingTitle, &listingImageURLs)
+	`, threadID, userID).Scan(&counterpartID, &counterpartUsername, &listingID, &listingTitle, &listingGame, &listingImageURLs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			var exists bool
@@ -324,10 +458,13 @@ func GetThreadDetail(ctx context.Context, pool *pgxpool.Pool, userID, threadID s
 	}
 
 	rows, err := pool.Query(ctx, `
-		select id, thread_id, sender_id, body, created_at
-		from messages
-		where thread_id = $1
-		order by created_at asc
+		select m.id, m.thread_id, m.sender_id, m.body, m.kind, m.created_at,
+			o.id, o.listing_id, ol.title, ol.game, ol.image_urls, o.buyer_id, o.seller_id, o.amount_cents, o.status
+		from messages m
+		left join offers o on o.id = m.offer_id
+		left join listings ol on ol.id = o.listing_id
+		where m.thread_id = $1
+		order by m.created_at asc
 	`, threadID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
@@ -338,10 +475,32 @@ func GetThreadDetail(ctx context.Context, pool *pgxpool.Pool, userID, threadID s
 	for rows.Next() {
 		var m Message
 		var createdAt time.Time
-		if err := rows.Scan(&m.ID, &m.ThreadID, &m.SenderID, &m.Body, &createdAt); err != nil {
+		var offerID, offerListingID, offerListingTitle, offerListingGame, offerBuyerID, offerSellerID, offerStatus *string
+		var offerAmountCents *int64
+		var offerListingImageURLs []string
+		if err := rows.Scan(
+			&m.ID, &m.ThreadID, &m.SenderID, &m.Body, &m.Kind, &createdAt,
+			&offerID, &offerListingID, &offerListingTitle, &offerListingGame, &offerListingImageURLs, &offerBuyerID, &offerSellerID, &offerAmountCents, &offerStatus,
+		); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		m.CreatedAt = createdAt.Format(time.RFC3339)
+		if offerID != nil {
+			summary := OfferSummary{
+				ID:           *offerID,
+				ListingID:    *offerListingID,
+				ListingTitle: *offerListingTitle,
+				ListingGame:  *offerListingGame,
+				BuyerID:      *offerBuyerID,
+				SellerID:     *offerSellerID,
+				AmountCents:  *offerAmountCents,
+				Status:       *offerStatus,
+			}
+			if len(offerListingImageURLs) > 0 {
+				summary.ListingImageURL = offerListingImageURLs[0]
+			}
+			m.Offer = &summary
+		}
 		messages = append(messages, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -354,7 +513,7 @@ func GetThreadDetail(ctx context.Context, pool *pgxpool.Pool, userID, threadID s
 		Messages:    messages,
 	}
 	if listingID != nil {
-		tl := ThreadListing{ID: *listingID, Title: *listingTitle}
+		tl := ThreadListing{ID: *listingID, Title: *listingTitle, Game: *listingGame}
 		if len(listingImageURLs) > 0 {
 			tl.ImageURL = listingImageURLs[0]
 		}
@@ -382,7 +541,8 @@ func ListThreadsForUser(ctx context.Context, pool *pgxpool.Pool, userID string) 
 			cu.username,
 			t.listing_id, l.title, l.image_urls,
 			t.last_message_preview, t.last_message_at, t.last_message_sender_id,
-			coalesce(r.last_read_at, 'epoch'::timestamptz) as last_read_at
+			coalesce(r.last_read_at, 'epoch'::timestamptz) as last_read_at,
+			(select m.kind from messages m where m.thread_id = t.id order by m.created_at desc limit 1) as last_message_kind
 		from message_threads t
 		join users cu on cu.id = case when t.participant_one = $1 then t.participant_two else t.participant_one end
 		left join listings l on l.id = t.listing_id
@@ -406,17 +566,23 @@ func ListThreadsForUser(ctx context.Context, pool *pgxpool.Pool, userID string) 
 		var lastMessageAt time.Time
 		var lastMessageSenderID *string
 		var lastReadAt time.Time
+		var lastMessageKind *string
 		if err := rows.Scan(
 			&s.ID, &s.Counterpart.ID, &counterpartUsername,
 			&listingID, &listingTitle, &listingImageURLs,
 			&lastMessagePreview, &lastMessageAt, &lastMessageSenderID,
-			&lastReadAt,
+			&lastReadAt, &lastMessageKind,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan thread: %w", err)
 		}
 		s.Counterpart.Username = counterpartUsername
 		if lastMessagePreview != nil {
 			s.LastMessageBody = *lastMessagePreview
+		}
+		if lastMessageKind != nil {
+			s.LastMessageKind = *lastMessageKind
+		} else {
+			s.LastMessageKind = "text"
 		}
 		s.LastMessageAt = lastMessageAt.Format(time.RFC3339)
 		if lastMessageSenderID != nil {

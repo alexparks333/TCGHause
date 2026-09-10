@@ -3,9 +3,63 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp } from "lucide-react";
-import { devAdjustTier, getMyTier, type SellerTier } from "@/lib/api";
+import { ArrowDown, ArrowUp, Minus, Plus } from "lucide-react";
+import {
+  devAdjustTier,
+  devSimulateIncomingMessage,
+  getMyTier,
+  type CelebrationItem,
+  type SellerTier,
+} from "@/lib/api";
 import { formatSellerTier } from "@/lib/types";
+import CelebrationToast from "./CelebrationToast";
+import { usePokeMessages } from "./MessageBubbleWatcher";
+
+// A pool of fake win/sale/review/offer items for the dev panel's TN (Test
+// Notification) button — lets every CelebrationToast variant be previewed
+// on demand while iterating on its look, instead of running a real
+// auction or review all the way through a close/poll cycle each time.
+// "offer" isn't a real backend celebration yet (see CelebrationToast's
+// KIND_ICON comment) — it's here purely so the icon/layout can be
+// previewed ahead of that feature existing. listingId is deliberately not
+// a real one: CelebrationToast's ackCelebration call for it just no-ops
+// (or, for "offer", 400s) server-side, and any network failure is already
+// swallowed there too.
+const TEST_NOTIFICATIONS: { kind: "win" | "sale" | "review" | "offer"; item: CelebrationItem }[] = [
+  {
+    kind: "sale",
+    item: {
+      listingId: "dev-test-notification",
+      title: "Charizard VMAX Rainbow Rare - Champion's Path",
+      priceCents: 45999,
+    },
+  },
+  {
+    kind: "win",
+    item: {
+      listingId: "dev-test-notification",
+      title: "Blastoise - Base Set Holo",
+      priceCents: 12500,
+    },
+  },
+  {
+    kind: "review",
+    item: {
+      listingId: "dev-test-notification",
+      title: "Pikachu Illustrator Promo",
+      priceCents: 0,
+      rating: 4.7,
+    },
+  },
+  {
+    kind: "offer",
+    item: {
+      listingId: "dev-test-notification",
+      title: "Umbreon Gold Star - POP Series 5",
+      priceCents: 32000,
+    },
+  },
+];
 
 const ACCOUNTS = [
   { key: "seller", label: "Seller" },
@@ -38,6 +92,64 @@ export default function DevQuickSwitch({
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState("");
 
+  // Minimized state persists across reloads (localStorage, not component
+  // state) — this panel remounts on every hard navigation (switching
+  // accounts alone does a full router.push + refresh), and re-expanding it
+  // every single time you switch accounts mid-test defeats the point of
+  // minimizing it at all. Starts expanded (matching the server-rendered
+  // markup) and only collapses after mount, once localStorage has actually
+  // been read — reading it inside useState's initializer would desync from
+  // SSR output and trigger a hydration warning.
+  const MINIMIZED_KEY = "dev-quick-switch-minimized";
+  const [minimized, setMinimized] = useState(false);
+  useEffect(() => {
+    setMinimized(localStorage.getItem(MINIMIZED_KEY) === "1");
+  }, []);
+  function toggleMinimized() {
+    setMinimized((prev) => {
+      const next = !prev;
+      localStorage.setItem(MINIMIZED_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
+  // testToastKey increments on every click so mashing the TN button
+  // remounts CelebrationToast each time — a fresh key restarts its whole
+  // in/hold/out timeline instead of no-oping while one is already
+  // showing. showTestToast unmounts it once its own onDone fires, so a
+  // finished (translated fully off-screen but still `position: fixed`)
+  // toast doesn't linger in the DOM indefinitely. testToast holds
+  // whichever TEST_NOTIFICATIONS entry got randomly picked on the last
+  // click, so the win/sale/review variant actually varies per click
+  // instead of the button only ever previewing one kind.
+  const [testToastKey, setTestToastKey] = useState(0);
+  const [showTestToast, setShowTestToast] = useState(false);
+  const [testToast, setTestToast] = useState(TEST_NOTIFICATIONS[0]);
+
+  // "Get a Message" — unlike TN above, this doesn't fabricate anything
+  // client-side: it asks the backend (message.DevSimulateIncoming) to send
+  // one real message from some other real user to whoever's signed in
+  // right now, then pokes MessageBubbleWatcher's poll so the resulting
+  // bubble shows up immediately instead of waiting up to its own 15s
+  // interval. Real thread, real row, real poll — the whole reason
+  // messages got their own watcher instead of reusing CelebrationToast's
+  // fake-preview approach.
+  const pokeMessages = usePokeMessages();
+  const [messageBusy, setMessageBusy] = useState(false);
+  const [messageError, setMessageError] = useState("");
+
+  async function getAMessage() {
+    setMessageBusy(true);
+    setMessageError("");
+    try {
+      await devSimulateIncomingMessage();
+      pokeMessages();
+    } catch (err) {
+      setMessageError(err instanceof Error ? err.message : "Failed to send test message");
+    } finally {
+      setMessageBusy(false);
+    }
+  }
+
   const activeKey = ACCOUNTS.find(
     ({ key }) => accountEmails[key] && accountEmails[key] === currentEmail,
   )?.key;
@@ -62,11 +174,35 @@ export default function DevQuickSwitch({
     }
   }
 
+  if (minimized) {
+    return (
+      <button
+        type="button"
+        onClick={toggleMinimized}
+        title="Expand dev quick switch panel"
+        className="fixed bottom-4 left-4 z-50 flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 font-mono text-xs font-semibold uppercase tracking-wide text-amber-700 shadow-lg transition-colors hover:bg-amber-100"
+      >
+        <Plus size={12} /> Dev
+      </button>
+    );
+  }
+
   return (
     <div className="fixed bottom-4 left-4 z-50 flex flex-col gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs shadow-lg">
-      <p className="font-mono font-semibold uppercase tracking-wide text-amber-700">
-        Dev &middot; Quick switch
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-mono font-semibold uppercase tracking-wide text-amber-700">
+          Dev &middot; Quick switch
+        </p>
+        <button
+          type="button"
+          onClick={toggleMinimized}
+          title="Minimize"
+          aria-label="Minimize dev quick switch panel"
+          className="rounded-md p-1 text-amber-700 transition-colors hover:bg-amber-100"
+        >
+          <Minus size={14} />
+        </button>
+      </div>
       <p className="max-w-[220px] truncate text-amber-700">
         {currentEmail ? (
           <>
@@ -110,6 +246,40 @@ export default function DevQuickSwitch({
       >
         Quick list (no photos)
       </Link>
+
+      <button
+        type="button"
+        title="Preview a random CelebrationToast variant (win/sale/review) without running a real sale or review"
+        onClick={() => {
+          const next = TEST_NOTIFICATIONS[Math.floor(Math.random() * TEST_NOTIFICATIONS.length)];
+          setTestToast(next);
+          setTestToastKey((n) => n + 1);
+          setShowTestToast(true);
+        }}
+        className="self-start rounded-md border border-amber-300 bg-white px-2.5 py-1.5 font-medium text-amber-800 transition-colors hover:bg-amber-100"
+      >
+        TN <span className="font-normal text-amber-600">(Test Notification)</span>
+      </button>
+      {showTestToast && (
+        <CelebrationToast
+          key={testToastKey}
+          item={testToast.item}
+          kind={testToast.kind}
+          onDone={() => setShowTestToast(false)}
+          linkable={false}
+        />
+      )}
+
+      <button
+        type="button"
+        title="Send a real message from another user, so the top-right message bubble shows up for real"
+        onClick={getAMessage}
+        disabled={messageBusy || !currentEmail}
+        className="self-start rounded-md border border-amber-300 bg-white px-2.5 py-1.5 font-medium text-amber-800 transition-colors hover:bg-amber-100 disabled:opacity-50"
+      >
+        {messageBusy ? "..." : "Get a Message"}
+      </button>
+      {messageError && <p className="max-w-[220px] text-brand-urgent">{messageError}</p>}
     </div>
   );
 }

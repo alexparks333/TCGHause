@@ -176,7 +176,7 @@ the buyer sees).
 | Silver | 6.25% | $6.86 | $98.14 |
 | Gold | 6.00% | $6.60 | $98.40 |
 | Platinum | 5.50% | $6.08 | $98.92 |
-| Haus Trust | Custom — varies per seller, not a fixed rate (§4.6) | — | — |
+| Hous Trust | Custom — varies per seller, not a fixed rate (§4.6) | — | — |
 
 ---
 
@@ -190,9 +190,9 @@ aspirational; every number is exactly what's enforced in code today.
 
 ### 4.1 The ladder
 
-**Six tiers, not five — Platinum sits between Gold and Haus Trust.** Platinum
-is exactly what "Haus Trust" used to describe (500-order threshold, fixed
-5.50% rate) before Haus Trust became its own tier above it — reached only
+**Six tiers, not five — Platinum sits between Gold and Hous Trust.** Platinum
+is exactly what "Hous Trust" used to describe (500-order threshold, fixed
+5.50% rate) before Hous Trust became its own tier above it — reached only
 through a real application, never order volume alone, with a commission rate
 negotiated per seller instead of a shared constant. See §4.6.
 
@@ -203,11 +203,11 @@ negotiated per seller instead of a shared constant. See §4.6.
 | Silver | 6.25% + $0.30 | 50–149 | 1.2× |
 | Gold | 6.00% + $0.30 | 150–499 | 0.8× |
 | Platinum | 5.50% + $0.30 | 500+ | 0.5× |
-| Haus Trust | **Custom + $0.30** — negotiated per seller at application, not fixed | Application only — never by volume | N/A — underwritten per seller, not modeled against an average |
+| Hous Trust | **Custom + $0.30** — negotiated per seller at application, not fixed | Application only — never by volume | N/A — underwritten per seller, not modeled against an average |
 
 **Gold, not New, is the number we lead with in marketing** ("6% + $0.30" is
 the headline rate quoted against eBay's ~13.6%). Platinum's 5.50% is
-something a seller earns through volume and standing; Haus Trust is
+something a seller earns through volume and standing; Hous Trust is
 something else again — invited, not simply reached.
 
 **Why new sellers pay the most, not the least:** this is risk-based pricing,
@@ -223,14 +223,14 @@ worst tier, with 97% of marketplace volume paying above the rate we advertise
 — which is a stealth price increase wearing a loyalty-program costume, on a
 platform whose whole premise is fee honesty. At 15/50/150/500: roughly 97% of
 sellers reach Bronze, about 31% reach Silver, and Platinum stays genuinely
-aspirational (~2% of sellers) rather than a rate nobody actually pays. Haus
+aspirational (~2% of sellers) rather than a rate nobody actually pays. Hous
 Trust sits above even that, and isn't sized as a percentage of the seller
 base at all — see §4.6.
 
 ### 4.2 Everything required to actually get promoted, tier by tier (New through Platinum)
 
 This section is the automatic ladder — New, Bronze, Silver, Gold, Platinum.
-**Haus Trust is not part of it; §4.6 covers that separately.** Order count
+**Hous Trust is not part of it; §4.6 covers that separately.** Order count
 alone is never enough to reach any of these five — **all** of the following
 must hold at the moment a seller's standing is recomputed, or the promotion
 simply doesn't happen that pass (it isn't lost, just retried the next day):
@@ -270,7 +270,7 @@ simply doesn't happen that pass (it isn't lost, just retried the next day):
   alone would qualify them for Gold in one recompute pass (say, the worker
   was down a while) needs Gold's 40-review/4.5 bar, not Bronze's 5-review/4.0
   one, even though technically "some" bar would've passed. Order volume alone
-  can never land a seller on Haus Trust this way, no matter how high it
+  can never land a seller on Hous Trust this way, no matter how high it
   climbs — the ladder tops out at Platinum; see §4.6 for why and how that's
   actually enforced in code, not just documented as a rule.
 
@@ -299,10 +299,10 @@ deliberately extended — flagged here as a real, open gap, not something
 resolved by this pass. §10 is the place to record that as an open decision
 if it should change.
 
-**Demotion out of Haus Trust drops exactly one tier, same as everywhere
+**Demotion out of Hous Trust drops exactly one tier, same as everywhere
 else on the ladder — straight to Platinum, never further.** The seller's
 negotiated custom rate is cleared the moment this happens (it was granted
-for Haus Trust specifically); if they're approved for Haus Trust again
+for Hous Trust specifically); if they're approved for Hous Trust again
 later, a fresh application grants a fresh rate, never a stale reused one.
 
 ### 4.5 Guardrails against gaming the ladder
@@ -317,9 +317,9 @@ later, a fresh application grants a fresh rate, never a stale reused one.
   instrument, address, or device — a sign of self-dealing to inflate an
   order count.
 
-### 4.6 Haus Trust: application only, never automatic, no fixed rate
+### 4.6 Hous Trust: application only, never automatic, no fixed rate
 
-Haus Trust is deliberately outside the automatic ladder §4.2 describes —
+Hous Trust is deliberately outside the automatic ladder §4.2 describes —
 nothing in the daily recompute job can ever promote a seller into it, no
 matter how many orders they process. Getting in requires all of:
 
@@ -335,17 +335,17 @@ matter how many orders they process. Getting in requires all of:
    on the application, not a hard wall that silently hides the apply button.
 4. **Approval sets a custom commission rate for that seller specifically** —
    "depending on what they are selling," per the product decision behind
-   this tier. There is no shared Haus Trust percentage the way every other
-   tier has one; `internal/seller.PctForSeller` reads each Haus Trust
+   this tier. There is no shared Hous Trust percentage the way every other
+   tier has one; `internal/seller.PctForSeller` reads each Hous Trust
    seller's own negotiated rate, set at approval and never reused across
    sellers or re-derived from a formula.
 
 **This is a real, structural difference from the rest of the ladder, not
 just a higher bar with extra paperwork** — every other tier is "cross this
 line, get promoted automatically, at a rate everyone at that tier shares."
-Haus Trust is "apply, get evaluated as an individual, get priced as an
+Hous Trust is "apply, get evaluated as an individual, get priced as an
 individual." The two coexist in the same `tier_events` audit trail and the
-same demotion mechanism (§4.4), but promotion INTO Haus Trust is the one
+same demotion mechanism (§4.4), but promotion INTO Hous Trust is the one
 tier change in this entire system that a human decides case by case.
 
 ### 4.7 The one thing we haven't decided yet
@@ -472,16 +472,16 @@ minute):
 | No delivery scan ever arrives | **21 days** after `shipped` | Auto-refund (protects the buyer from a dead tracking number) |
 | Claim window | **3 days** post-delivery (orders under $250) / **7 days** (orders $250+) | Auto-release to seller if no claim is filed |
 
-**Only Haus Trust gets an instant-release shortcut — Platinum and Gold do
-not.** An earlier version of the code gave both Gold and Haus Trust sellers
+**Only Hous Trust gets an instant-release shortcut — Platinum and Gold do
+not.** An earlier version of the code gave both Gold and Hous Trust sellers
 a skip-the-claim-window release the instant a carrier scan confirmed
-delivery; that was deliberately scaled back to Haus Trust only. Every other
+delivery; that was deliberately scaled back to Hous Trust only. Every other
 tier, Platinum and Gold included, goes through the identical 3/7-day
 claim-window trigger above. Tier promotion/demotion is real and running
 (§4), so Platinum/Gold/etc. are all reachable through ordinary volume — but
-Haus Trust specifically requires the application process in §4.6, so this
+Hous Trust specifically requires the application process in §4.6, so this
 instant-release benefit is only ever felt by a seller an admin has actually
-approved for Haus Trust, not something volume alone unlocks.
+approved for Hous Trust, not something volume alone unlocks.
 
 **Filing a claim inside the window stops the release timer automatically** —
 opening a claim (`internal/dispute.OpenClaim`) transitions the order from
@@ -636,7 +636,7 @@ hear back after review."
 
 **Budget assumption:** a baseline 0.4% dispute rate, multiplied by each
 tier's modeled risk factor from §4.1 (so New-tier sellers are budgeted at
-3.0× that baseline, Platinum at 0.5× — Haus Trust isn't sized this way at
+3.0× that baseline, Platinum at 0.5× — Hous Trust isn't sized this way at
 all, see §4.6). Stripe charges us a flat $15 per
 dispute regardless of who wins it, which is itself a real cost line. This
 modeling assumption is unaffected by the direct-charge → separate-charges-and-

@@ -1,6 +1,15 @@
 import { cache } from "react";
 import { createClient } from "./supabase/client";
-import type { CatalogCard, Listing, MyBid, ShippingPreset } from "./types";
+import type {
+  CatalogCard,
+  EndListingAction,
+  EndListingReason,
+  Game,
+  Listing,
+  MyBid,
+  OfferStatus,
+  ShippingPreset,
+} from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -114,24 +123,24 @@ export async function getListing(id: string): Promise<Listing | null> {
 }
 
 // Search-as-you-type against TCG Haven's card catalog (Pokémon/Disney
-// Lorcana/Riftbound only — other games always resolve to []), used by the
-// Sell wizard's Step1Details autofill. Called directly from a Client
-// Component, so no server-side caching directive; the API itself already
-// caches TCG Haven's catalog in memory (internal/cardcatalog).
-export async function searchCatalogCards(game: string, query: string): Promise<CatalogCard[]> {
-  const res = await fetch(
-    `${API_URL}/catalog/search?game=${encodeURIComponent(game)}&q=${encodeURIComponent(query)}`,
-  );
+// Lorcana/Riftbound only — other games always resolve to []). Omitting
+// `game` merges results across every catalog-backed game
+// (cardcatalog.SearchAll); passing one scopes to just that game
+// (cardcatalog.Search) — the Sell wizard's CardSearch uses both, depending
+// on whether the seller has picked a game in its own filter, while the
+// Favorite Card widget picker always searches every game. Called directly
+// from a Client Component, so no server-side caching directive; the API
+// itself already caches TCG Haven's catalog in memory (internal/cardcatalog).
+export async function searchCatalogCardsAllGames(query: string): Promise<CatalogCard[]> {
+  const res = await fetch(`${API_URL}/catalog/search?q=${encodeURIComponent(query)}`);
   if (!res.ok) throw new Error(`Card search failed: ${res.status}`);
   return res.json();
 }
 
-// Same endpoint, `game` omitted — the API merges results across every
-// catalog-backed game (cardcatalog.SearchAll) instead of just one. Used by
-// the Favorite Card widget picker, which (unlike the Sell wizard's
-// per-game CardSearch) has no game already chosen to search within.
-export async function searchCatalogCardsAllGames(query: string): Promise<CatalogCard[]> {
-  const res = await fetch(`${API_URL}/catalog/search?q=${encodeURIComponent(query)}`);
+export async function searchCatalogCards(game: string, query: string): Promise<CatalogCard[]> {
+  const res = await fetch(
+    `${API_URL}/catalog/search?game=${encodeURIComponent(game)}&q=${encodeURIComponent(query)}`,
+  );
   if (!res.ok) throw new Error(`Card search failed: ${res.status}`);
   return res.json();
 }
@@ -173,7 +182,7 @@ export async function getMySales(accessToken: string): Promise<Listing[]> {
 }
 
 // Mirrors apps/api/internal/seller.Tier exactly.
-export type SellerTier = "new" | "bronze" | "silver" | "gold" | "platinum" | "haus_trust";
+export type SellerTier = "new" | "bronze" | "silver" | "gold" | "platinum" | "hous_trust";
 
 // Mirrors apps/api/internal/user.ProfileSticker exactly. xPct is a
 // percentage (0-100) of the canvas's width. yPx is pixels down from the
@@ -284,6 +293,20 @@ export async function getMyAddress(accessToken: string): Promise<Address | null>
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to load address: ${res.status}`);
   return res.json();
+}
+
+// Same /me/address data as getMyAddress, but for Client Components
+// (PrintLabelButton's "Change Shipping Label" edit form, which always
+// prefills from this before letting the seller override it for one label)
+// — apiFetch attaches the current session's token itself, same shape as
+// getMyOrdersMine alongside getMyOrders.
+export async function getMyAddressMine(): Promise<Address | null> {
+  try {
+    return await apiFetch("/me/address");
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
 }
 
 // Public — no auth needed, since SignUpForm calls this before an account
@@ -509,16 +532,97 @@ export async function getMyWatchedIds(accessToken: string): Promise<Set<string>>
   return new Set(ids);
 }
 
+// "Delete Listing" on the Selling page — never a real row delete server-side
+// (internal/auction.EndListing flips status to 'ended'/'cancelled'
+// depending on outcome, same shape as a natural auction close). A
+// fixed-price listing or a never-bid-on auction needs no `input` at all —
+// omit it and this sends an empty body, which the backend's EndListing
+// treats as a plain, no-consequence delete. Once an auction has a real
+// bid, `input` is required (`action`, plus `reason` when action is
+// "cancel_bids") — mirrors eBay's own real early-ending rules
+// (docs/EditListing.md). Throws ApiError on failure so the caller's own
+// catch can read err.message for the specific reason (already sold, too
+// close to the scheduled end to end early, etc.).
+export async function cancelListing(
+  listingId: string,
+  input?: { action: EndListingAction; reason?: EndListingReason },
+): Promise<void> {
+  await apiFetch(`/listings/${listingId}`, {
+    method: "DELETE",
+    body: input ? JSON.stringify(input) : undefined,
+  });
+}
+
+// "Edit Listing" on the Selling page — mirrors apps/api/internal/listing.
+// UpdateInput exactly, which in turn mirrors eBay's own real "revise a
+// listing" rules: a fixed-price listing can move its price up or down and
+// change shipping freely; an auction with no bids can only lower its
+// starting bid/Buy It Now price (never raise) and can still change
+// shipping; an auction with any bid rejects this call outright
+// (ErrHasBids) — nothing about it is editable once bidding has started,
+// same as eBay. startingBidCents/shippingPreset are both no-ops when
+// omitted/zero — "leave as-is," not "clear this field."
+export async function updateListing(
+  listingId: string,
+  input: {
+    title: string;
+    set: string;
+    cardNumber: string;
+    rarity: string;
+    priceCents: number;
+    allowOffers: boolean;
+    minOfferCents: number;
+    startingBidCents?: number;
+    shippingPreset?: ShippingPreset | "";
+    imageUrls: string[];
+  },
+): Promise<Listing> {
+  return apiFetch(`/listings/${listingId}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+// Mirrors apps/api/internal/listing.PhotoEdit exactly — one row of a
+// listing's photo-edit audit trail (added whenever Update's imageUrls
+// actually changes). Admin-only; see getListingPhotoHistory below.
+export interface PhotoEdit {
+  id: string;
+  listingId: string;
+  sellerId: string;
+  beforeImageUrls: string[];
+  afterImageUrls: string[];
+  createdAt: string;
+}
+
+// Admin-only (server enforces via the same ADMIN_EMAILS allowlist as
+// getAdminClaims) — the claim detail page's "did the photos change right
+// before this sold" timeline. Empty array, never an error, for a listing
+// whose photos were never edited.
+export async function getListingPhotoHistory(
+  listingId: string,
+  accessToken: string,
+): Promise<PhotoEdit[]> {
+  const res = await fetch(`${API_URL}/listings/${listingId}/photo-history`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new ApiError(await res.text(), res.status);
+  return res.json();
+}
+
 export interface CelebrationItem {
   listingId: string;
   title: string;
   imageUrl?: string;
   priceCents: number;
+  // Only present on an item from `reviews` — a win/sale toast reads
+  // priceCents, a review toast reads this instead (the two are never both
+  // populated on the same item).
+  rating?: number;
 }
 
 export interface Celebrations {
   wins: CelebrationItem[];
   sales: CelebrationItem[];
+  reviews: CelebrationItem[];
 }
 
 // Client-only (CelebrationWatcher polls this from the browser) — uses
@@ -532,7 +636,13 @@ export async function getMyCelebrations(): Promise<Celebrations> {
 // Marks one win/sale celebration as shown so GET /me/celebrations never
 // returns it again — called once a toast actually starts displaying it,
 // not on dismiss, so a tab closed mid-animation still counts as "seen".
-export async function ackCelebration(listingId: string, kind: "win" | "sale"): Promise<void> {
+export async function ackCelebration(
+  listingId: string,
+  // "offer" isn't a real backend celebration kind yet (see
+  // CelebrationToast's KIND_ICON comment) — the API 400s on it, which the
+  // caller already swallows, same as any other ack failure.
+  kind: "win" | "sale" | "review" | "offer",
+): Promise<void> {
   await apiFetch("/me/celebrations/ack", {
     method: "POST",
     body: JSON.stringify({ listingId, kind }),
@@ -545,10 +655,25 @@ export async function ackCelebration(listingId: string, kind: "win" | "sale"): P
 // stay in the list until read.
 export interface AppNotification {
   id: string;
-  kind: "won" | "sold" | "outbid" | "bought";
+  kind:
+    | "won"
+    | "sold"
+    | "outbid"
+    | "bought"
+    | "seller_review"
+    | "buyer_review"
+    | "offer_received"
+    | "offer_accepted"
+    | "offer_declined";
   listingId: string;
   listingTitle: string;
+  listingGame: Game;
   listingImageUrl?: string;
+  // Set on the three offer_* kinds only — lets the bell route straight to
+  // the specific offer. A listing can have several different buyers each
+  // with their own pending offer at once, so the listing alone doesn't
+  // disambiguate which one this notification is about.
+  offerId?: string;
   readAt: string | null;
   createdAt: string;
 }
@@ -587,6 +712,87 @@ export async function markAllNotificationsRead(): Promise<void> {
   await apiFetch("/me/notifications/read-all", { method: "POST" });
 }
 
+// Mirrors apps/api/internal/offer.Offer exactly — real offer/negotiation
+// state on top of a listing's Buy It Now price (listing.allowOffers/
+// minOfferCents). Denormalized with the listing's title/photo and both
+// participants' usernames, same "no N+1 per row" shape as
+// MessageThreadSummary, so a list of offers never needs a second round
+// trip per row.
+export interface Offer {
+  id: string;
+  listingId: string;
+  listingTitle: string;
+  listingImageUrl?: string;
+  buyerId: string;
+  buyerUsername: string | null;
+  sellerId: string;
+  sellerUsername: string | null;
+  amountCents: number;
+  status: OfferStatus;
+  createdAt: string;
+  respondedAt?: string;
+}
+
+// Submits a real offer on listingId — the backend re-validates
+// allowOffers/minOfferCents/the Buy It Now price regardless; this is what
+// backs the "Make an Offer" button's own client-side check.
+export async function submitOffer(listingId: string, amountCents: number): Promise<Offer> {
+  return apiFetch(`/listings/${listingId}/offers`, {
+    method: "POST",
+    body: JSON.stringify({ amountCents }),
+  });
+}
+
+// Every offer the caller has ever sent, across every listing — backs the
+// buyer-facing "Offers" section on /account/bids-offers. Server-side,
+// explicit accessToken — same shape as getMyBids — so that page renders
+// with real data on first paint, no client-only loading flash.
+export async function getMySentOffers(accessToken: string): Promise<Offer[]> {
+  const res = await fetch(`${API_URL}/me/offers/sent`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Failed to load offers: ${res.status}`);
+  return res.json();
+}
+
+// Every offer the caller has ever received, across every listing they
+// sell — the seller-side counterpart to getMySentOffers, backing the
+// combined Offers tab on /account/bids-offers (accept/decline live right
+// there, not just on each listing's own page). Same server-side,
+// explicit-accessToken shape.
+export async function getMyReceivedOffers(accessToken: string): Promise<Offer[]> {
+  const res = await fetch(`${API_URL}/me/offers/received`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Failed to load offers: ${res.status}`);
+  return res.json();
+}
+
+// Every offer on one specific listing — only that listing's own seller can
+// call this (internal/offer.ListForListing enforces it server-side too).
+// Backs the "Offers" panel a seller sees on their own listing page.
+// Server-side initial fetch, same explicit-accessToken shape as above —
+// app/listing/[id]/page.tsx calls this only when isOwner, mirroring how it
+// already only fetches `order` for an owner viewing their own sold listing.
+export async function getOffersForListing(listingId: string, accessToken: string): Promise<Offer[]> {
+  const res = await fetch(`${API_URL}/listings/${listingId}/offers`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Failed to load offers: ${res.status}`);
+  return res.json();
+}
+
+export async function acceptOffer(offerId: string): Promise<Offer> {
+  return apiFetch(`/offers/${offerId}/accept`, { method: "POST" });
+}
+
+export async function declineOffer(offerId: string): Promise<Offer> {
+  return apiFetch(`/offers/${offerId}/decline`, { method: "POST" });
+}
+
 // Mirrors apps/api/internal/message exactly — real buyer/seller direct
 // messaging, replacing lib/mock-account.ts's myMessages (the last still-
 // mock account surface per CLAUDE.md §6.13/§8). One thread per pair of
@@ -600,6 +806,7 @@ export interface MessageCounterpart {
 export interface MessageThreadListing {
   id: string;
   title: string;
+  game?: Game;
   imageUrl?: string;
 }
 
@@ -607,10 +814,33 @@ export interface MessageThreadSummary {
   id: string;
   counterpart: MessageCounterpart;
   listing?: MessageThreadListing;
+  // "offer" when the thread's most recent message is a live offer bubble —
+  // lets the inbox list render a real "Sent/Received an Offer" pill
+  // instead of just its plain-text fallback body.
+  lastMessageKind: "text" | "offer";
   lastMessageBody: string;
   lastMessageAt: string;
   lastMessageIsMine: boolean;
   unread: boolean;
+}
+
+// The live state of the offer a kind="offer" ChatMessage points at — always
+// re-read fresh from the offers table (internal/message.OfferSummary), so
+// accepting/declining it from the listing page or Bids/Offers shows up here
+// the next time this thread is fetched. buyerId/sellerId (not just "mine"/
+// "theirs") are included because a thread is per pair-of-users, not per
+// listing — which side of THIS offer the viewer is on can't be inferred
+// from who sent the message alone.
+export interface ChatMessageOffer {
+  id: string;
+  listingId: string;
+  listingTitle: string;
+  listingGame: Game;
+  listingImageUrl?: string;
+  buyerId: string;
+  sellerId: string;
+  amountCents: number;
+  status: OfferStatus;
 }
 
 export interface ChatMessage {
@@ -618,6 +848,8 @@ export interface ChatMessage {
   threadId: string;
   senderId: string;
   body: string;
+  kind: "text" | "offer";
+  offer?: ChatMessageOffer;
   createdAt: string;
 }
 
@@ -697,6 +929,15 @@ export async function sendMessage(threadId: string, body: string): Promise<ChatM
   });
 }
 
+// Backs the dev panel's "Get a Message" button (DevQuickSwitch) — asks the
+// backend to send one real message from some other real user to whoever's
+// currently signed in (internal/message.DevSimulateIncoming), so
+// MessageBubbleWatcher's own poll picks it up as a genuine incoming
+// message rather than the caller faking a bubble client-side.
+export async function devSimulateIncomingMessage(): Promise<void> {
+  await apiFetch("/me/messages/dev-simulate-incoming", { method: "POST" });
+}
+
 // Buys a listing outright — works for a fixed-price listing (its
 // price_cents always was the Buy It Now price) or an auction-format
 // listing that has a buyItNowPriceCents set, skipping the rest of the
@@ -765,6 +1006,12 @@ export interface CheckoutIntent {
   sellerFeeCents: number;
   sellerNetCents: number;
   taxCents: number;
+  // Identical regardless of rail (only taxCents/amountCents actually vary
+  // between card and bank) — lets the checkout page show a real Subtotal +
+  // Shipping + Tax = Total breakdown instead of one opaque number, same
+  // shape as OrderReceipt.tsx's post-purchase receipt.
+  subtotalCents: number;
+  shippingCents: number;
   // Whichever saved card/bank actually ended up attached to this intent —
   // whatever MockCheckout.tsx's picker passed as paymentMethodId (below),
   // or the buyer's default if they haven't picked one yet. Never both set
@@ -958,7 +1205,7 @@ export interface Order {
   tierAtSale: string;
   // The seller's actual commission rate at sale time (e.g. 0.063 for
   // 6.3%) — a permanent snapshot (design doc v2 §10), never re-derived
-  // from tierAtSale later, since a Haus Trust seller's rate is
+  // from tierAtSale later, since a Hous Trust seller's rate is
   // individually negotiated and every tier's own rate can change going
   // forward without rewriting past orders.
   tierPctAtSale: number;
@@ -1055,6 +1302,52 @@ export async function getOrderForListing(listingId: string, accessToken: string)
   return res.json();
 }
 
+// Mirrors apps/api/internal/shipping.TrackingLocation — a checkpoint's
+// facility/region, never a full mailing address.
+export interface TrackingLocation {
+  city?: string;
+  state?: string;
+  zip?: string;
+  country?: string;
+}
+
+// Mirrors apps/api/internal/shipping.TrackingCheckpoint exactly.
+export interface TrackingCheckpoint {
+  status: string;
+  statusDetails: string;
+  location?: TrackingLocation;
+  occurredAt: string;
+}
+
+// Mirrors apps/api/internal/shipping.TrackingInfo — the whole tracking
+// page's data, checkpoints newest first (already sorted server-side).
+export interface TrackingInfo {
+  carrier: string;
+  trackingNumber: string;
+  status: string;
+  statusDetails: string;
+  eta?: string;
+  checkpoints: TrackingCheckpoint[];
+}
+
+// Backs the Shipped step's dedicated tracking page
+// (app/order/[id]/tracking) — a real carrier lookup (Shippo's public
+// track-a-shipment API), not a re-derivation of shippedAt/deliveredAt.
+// Same explicit-accessToken shape as getOrderForListing, since the page
+// fetches server-side. Throws (via ApiError) with a 404 if no tracking
+// number has been recorded yet, or a 503 if tracking isn't configured.
+export async function getOrderTracking(listingId: string, accessToken: string): Promise<TrackingInfo> {
+  const res = await fetch(`${API_URL}/listings/${listingId}/order/tracking`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(text || `Failed to load tracking: ${res.status}`, res.status);
+  }
+  return res.json();
+}
+
 // Records one evidence photo after it's already been uploaded client-side
 // to Supabase Storage (lib/storage.ts's uploadOrderEvidence) — this call
 // only ever sends the resulting URL, never the file itself.
@@ -1099,13 +1392,90 @@ export function labelFromOrder(order: Order): ShippingLabel | null {
 // The seller's "buy a shipping label" action — dispatches server-side to
 // Shippo or Pitney Bowes depending on whichever preset the order
 // snapshotted (see Order.shippingPreset), using both parties' saved
-// addresses (Account Settings). 400 if either address is missing, 503 if
-// the vendor that preset needs isn't configured on the backend. Only
-// records the result on the order — still requires a follow-up shipOrder
-// call (or the caller can pass the returned carrier/trackingNumber
-// straight through) to actually transition the order to shipped.
-export async function buyShippingLabel(listingId: string): Promise<ShippingLabel> {
-  return apiFetch(`/listings/${listingId}/order/shipping-label`, { method: "POST" });
+// addresses (Account Settings) unless fromAddressOverride is given, in
+// which case that stands in for the seller's own account address for this
+// one label only (never persisted back to Account Settings — see
+// PrintLabelButton's "Change Shipping Label" flow, which always prefills
+// its edit form from GET /me/address first). The buyer's own address is
+// never overridable here — this only ever changes whose return address a
+// package ships from, not where it's going. 400 if either address is
+// missing/invalid, 409 if the order has already shipped (a label can only
+// be bought or changed up through awaiting_ship), 503 if the vendor that
+// preset needs isn't configured on the backend. Only records the result on
+// the order — still requires a follow-up shipOrder call (or the caller can
+// pass the returned carrier/trackingNumber straight through) to actually
+// transition the order to shipped.
+export async function buyShippingLabel(
+  listingId: string,
+  fromAddressOverride?: Address,
+): Promise<ShippingLabel> {
+  return apiFetch(`/listings/${listingId}/order/shipping-label`, {
+    method: "POST",
+    body: JSON.stringify({ fromAddressOverride: fromAddressOverride ?? null }),
+  });
+}
+
+export interface AddressVerification {
+  valid: boolean;
+  // True when Pitney Bowes' real USPS lookup normalized something (a
+  // fixed ZIP+4, an expanded abbreviation) — worth showing the caller the
+  // corrected fields before they commit to buying with them, since a
+  // tracked_envelope label is non-refundable once purchased (see
+  // internal/shipping.BuyLabel's own doc comment).
+  corrected: boolean;
+  normalized?: Address;
+  errorReason?: string;
+}
+
+// Checks an address against USPS's real database (the same check a label
+// purchase itself performs) BEFORE spending a non-refundable
+// tracked_envelope label purchase on finding out it was wrong — added
+// after a real "E412 - the delivery information does not match data for
+// this city" error surfaced only as a raw backend error message on
+// PrintLabelButton's "Change Shipping Label" form. Not scoped to a
+// specific order/listing, so AddressForm.tsx (Account Settings) can call
+// this too, not just the shipping-label override flow.
+export async function verifyShippingAddress(
+  a: Pick<Address, "line1" | "line2" | "city" | "state" | "postalCode" | "country">,
+): Promise<AddressVerification> {
+  return apiFetch("/shipping/verify-address", {
+    method: "POST",
+    body: JSON.stringify(a),
+  });
+}
+
+export interface AddressSuggestion {
+  placeId: string;
+  text: string;
+}
+
+export type ResolvedAddress = Pick<Address, "line1" | "city" | "state" | "postalCode" | "country">;
+
+// As-you-type address suggestions (internal/address.AutocompleteClient,
+// Google Places under the hood) — added alongside verifyShippingAddress
+// above for the same reason: a free-text address field lets through
+// typos/format mismatches (wrong city/ZIP pairing, "USA" instead of "US")
+// that read fine to a person but fail Pitney Bowes' stricter USPS-backed
+// validation. Picking a real suggestion here means the fields Resolve
+// fills in already came from a real, USPS-known address. Returns an empty
+// list (never throws) on any failure, including the backend not having
+// GOOGLE_PLACES_API_KEY configured at all — callers should treat "no
+// suggestions" as "fall back to typing it by hand," not an error state.
+export async function autocompleteAddress(query: string): Promise<AddressSuggestion[]> {
+  if (!query.trim()) return [];
+  try {
+    const { suggestions } = await apiFetch(`/address/autocomplete?q=${encodeURIComponent(query)}`);
+    return suggestions ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// Turns a suggestion the caller picked into the address fields to autofill
+// the rest of the form with (everything Places can know — never fullName
+// or phone).
+export async function resolveAddressSuggestion(placeId: string): Promise<ResolvedAddress> {
+  return apiFetch(`/address/autocomplete/resolve?placeId=${encodeURIComponent(placeId)}`);
 }
 
 // Triggers a real file download of the order's already-purchased label PDF
@@ -1153,6 +1523,18 @@ export async function shipOrder(
     method: "POST",
     body: JSON.stringify({ carrier, trackingNumber }),
   });
+}
+
+// Dev-only "advance" button (Transactions list, TransactionStepper) — pushes
+// the order exactly one step through the real shipping/delivery/claim-window
+// flow, bypassing the 72-hour ship clock, a real carrier scan, and the 3/7-day
+// claim window. There's no way to actually ship a physical card in dev, so
+// this is the stand-in for "the seller shipped it, the carrier delivered
+// it, the claim window elapsed." The backend refuses to run this outside
+// development regardless of whether the button is reachable at all
+// (order.AllowDevAdvance) — see apps/api/internal/order/devadvance.go.
+export async function devAdvanceOrder(listingId: string): Promise<Order> {
+  return apiFetch(`/listings/${listingId}/order/dev-advance`, { method: "POST" });
 }
 
 // Mirrors apps/api/internal/dispute exactly (design doc v2 §9).
@@ -1277,6 +1659,7 @@ export async function appealClaim(claimId: string, body: string): Promise<void> 
 export interface AdminClaimSummary extends Claim {
   orderState: OrderState;
   chargedCents: number;
+  listingId: string;
   listingTitle: string;
   buyerUsername: string;
   sellerUsername: string;
@@ -1462,10 +1845,10 @@ export async function getMyTier(): Promise<MyTierStatus> {
   return apiFetch("/me/seller/tier");
 }
 
-// Platinum-only — apps/api/internal/seller.ApplyForHausTrust enforces the
+// Platinum-only — apps/api/internal/seller.ApplyForHousTrust enforces the
 // real eligibility bar server-side; this just calls it.
-export async function applyForHausTrust(): Promise<{ applicationId: string }> {
-  return apiFetch("/me/seller/haus-trust/apply", { method: "POST" });
+export async function applyForHousTrust(): Promise<{ applicationId: string }> {
+  return apiFetch("/me/seller/hous-trust/apply", { method: "POST" });
 }
 
 // Dev-only — apps/api/internal/seller.DevAdjustTier refuses to run outside

@@ -23,6 +23,7 @@ import (
 	"auctionhous-tcg/api/internal/message"
 	"auctionhous-tcg/api/internal/metrics"
 	"auctionhous-tcg/api/internal/notification"
+	"auctionhous-tcg/api/internal/offer"
 	"auctionhous-tcg/api/internal/order"
 	"auctionhous-tcg/api/internal/payment"
 	"auctionhous-tcg/api/internal/paymentmethod"
@@ -49,6 +50,8 @@ func main() {
 	listing.AllowDevDurations = cfg.Environment != "production"
 	listing.AllowMissingPhotos = cfg.Environment != "production"
 	seller.AllowDevTierAdjust = cfg.Environment != "production"
+	order.AllowDevAdvance = cfg.Environment != "production"
+	message.AllowDevSimulateIncoming = cfg.Environment != "production"
 
 	ctx := context.Background()
 	mux := http.NewServeMux()
@@ -87,6 +90,13 @@ func main() {
 		mux.Handle("POST /me/widgets", verifier.RequireAuth(user.HandleSetWidgets(pool)))
 		mux.Handle("GET /me/address", verifier.RequireAuth(address.HandleGet(pool)))
 		mux.Handle("POST /me/address", verifier.RequireAuth(address.HandleUpsert(pool)))
+		placesClient := address.NewAutocompleteClient(cfg.GooglePlacesAPIKey)
+		if placesClient.IsConfigured() {
+			mux.Handle("GET /address/autocomplete", verifier.RequireAuth(address.HandleAutocomplete(placesClient)))
+			mux.Handle("GET /address/autocomplete/resolve", verifier.RequireAuth(address.HandleAutocompleteResolve(placesClient)))
+		} else {
+			log.Println("GOOGLE_PLACES_API_KEY not set — address autocomplete disabled (see apps/api/.env.example)")
+		}
 		mux.HandleFunc("GET /usernames/available", user.HandleUsernameAvailable(pool))
 		mux.HandleFunc("GET /users/{username}", user.HandleGetByUsername(pool))
 		mux.HandleFunc("GET /users/{username}/reviews", feedback.HandleListForSeller(pool))
@@ -96,14 +106,26 @@ func main() {
 		mux.HandleFunc("GET /users/{username}/buyer-stats", buyerreview.HandleStatsForUser(pool))
 
 		shippingClient := shipping.NewClient(cfg.ShippoAPIToken)
-		pbClient := shipping.NewPitneyBowesClient(cfg.PitneyBowesClientID, cfg.PitneyBowesClientSecret, cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
+		pbClient := shipping.NewPitneyBowesClient(cfg.PitneyBowesClientID, cfg.PitneyBowesClientSecret)
 		if !pbClient.IsConfigured() {
 			log.Println("PITNEY_BOWES_CLIENT_ID/SECRET not set — tracked-envelope label purchase disabled (see apps/api/.env.example)")
 		}
+		mux.Handle("POST /shipping/verify-address", verifier.RequireAuth(shipping.HandleVerifyAddress(pbClient)))
 		mux.Handle("POST /listings", verifier.RequireAuth(listing.HandleCreate(pool, shippingClient)))
 		mux.HandleFunc("GET /listings", listing.HandleList(pool))
 		mux.HandleFunc("GET /listings/counts", listing.HandleCounts(pool))
 		mux.HandleFunc("GET /listings/{id}", listing.HandleGet(pool))
+		mux.Handle("PATCH /listings/{id}", verifier.RequireAuth(listing.HandleUpdate(pool, shippingClient)))
+		// "Delete Listing" is an auction-aware decision now (EndListing), not
+		// just a listing-status flip — see internal/auction/end_listing.go.
+		mux.Handle("DELETE /listings/{id}", verifier.RequireAuth(auction.HandleEndListing(pool)))
+		mux.Handle("GET /listings/{id}/photo-history", verifier.RequireAuth(listing.HandlePhotoHistory(pool, cfg.AdminEmails)))
+		mux.Handle("POST /listings/{id}/offers", verifier.RequireAuth(offer.HandleSubmit(pool)))
+		mux.Handle("GET /listings/{id}/offers", verifier.RequireAuth(offer.HandleListForListing(pool)))
+		mux.Handle("GET /me/offers/received", verifier.RequireAuth(offer.HandleListReceived(pool)))
+		mux.Handle("GET /me/offers/sent", verifier.RequireAuth(offer.HandleListSent(pool)))
+		mux.Handle("POST /offers/{id}/accept", verifier.RequireAuth(offer.HandleAccept(pool)))
+		mux.Handle("POST /offers/{id}/decline", verifier.RequireAuth(offer.HandleDecline(pool)))
 		paymentClient := payment.NewClient(cfg.StripeSecretKey)
 		mailClient := mail.NewClient(cfg.ResendAPIKey, cfg.ClaimsNotifyFrom, cfg.ClaimsNotifyTo)
 		if !mailClient.IsConfigured() {
@@ -113,7 +135,7 @@ func main() {
 		if !paymentClient.IsConfigured() {
 			log.Println("STRIPE_SECRET_KEY not set — Buy It Now falls back to its no-payment mock path (see apps/api/.env.example)")
 		} else {
-			mux.Handle("POST /listings/{id}/checkout-intent", verifier.RequireAuth(auction.HandleCreateCheckoutIntent(pool, paymentClient)))
+			mux.Handle("POST /listings/{id}/checkout-intent", verifier.RequireAuth(auction.HandleCreateCheckoutIntent(pool, paymentClient, shippingClient)))
 			mux.Handle("GET /me/payment-methods", verifier.RequireAuth(paymentmethod.HandleList(pool, paymentClient)))
 			mux.Handle("POST /me/payment-methods/setup-intent", verifier.RequireAuth(paymentmethod.HandleCreateSetupIntent(pool, paymentClient)))
 			mux.Handle("POST /me/payment-methods/{id}/default", verifier.RequireAuth(paymentmethod.HandleSetDefault(pool, paymentClient)))
@@ -128,9 +150,9 @@ func main() {
 			mux.Handle("POST /me/seller/connect-account/onboarding-link", verifier.RequireAuth(seller.HandleCreateOnboardingLink(pool, paymentClient, cfg.WebOrigin)))
 
 			mux.Handle("GET /me/seller/tier", verifier.RequireAuth(seller.HandleGetMyTier(pool)))
-			mux.Handle("POST /me/seller/haus-trust/apply", verifier.RequireAuth(seller.HandleApplyForHausTrust(pool)))
-			mux.Handle("GET /admin/haus-trust-applications", verifier.RequireAuth(seller.HandleAdminListHausTrustApplications(pool, cfg.AdminEmails)))
-			mux.Handle("POST /admin/haus-trust-applications/{id}/decide", verifier.RequireAuth(seller.HandleAdminDecideHausTrustApplication(pool, cfg.AdminEmails)))
+			mux.Handle("POST /me/seller/hous-trust/apply", verifier.RequireAuth(seller.HandleApplyForHousTrust(pool)))
+			mux.Handle("GET /admin/hous-trust-applications", verifier.RequireAuth(seller.HandleAdminListHousTrustApplications(pool, cfg.AdminEmails)))
+			mux.Handle("POST /admin/hous-trust-applications/{id}/decide", verifier.RequireAuth(seller.HandleAdminDecideHousTrustApplication(pool, cfg.AdminEmails)))
 
 			// Dev-only — real auth (RequireAuth), gated to non-production at
 			// runtime inside DevAdjustTier itself (seller.AllowDevTierAdjust,
@@ -147,6 +169,11 @@ func main() {
 			mux.Handle("GET /listings/{id}/order", verifier.RequireAuth(order.HandleGetForListing(pool)))
 			mux.Handle("POST /listings/{id}/order/evidence", verifier.RequireAuth(order.HandleAddEvidence(pool)))
 			mux.Handle("POST /listings/{id}/order/ship", verifier.RequireAuth(order.HandleShip(pool)))
+			// Dev-only — real auth (RequireAuth), gated to non-production at
+			// runtime inside DevAdvance itself (order.AllowDevAdvance, set
+			// above), same belt-and-suspenders shape as
+			// /me/seller/dev-tier-adjust just above.
+			mux.Handle("POST /listings/{id}/order/dev-advance", verifier.RequireAuth(order.HandleDevAdvance(pool, paymentClient)))
 			mux.Handle("GET /listings/{id}/order/buyer-review", verifier.RequireAuth(buyerreview.HandleGetForListing(pool)))
 			mux.Handle("POST /listings/{id}/order/buyer-review", verifier.RequireAuth(buyerreview.HandleUpsert(pool)))
 			if !shippingClient.IsConfigured() && !pbClient.IsConfigured() {
@@ -160,6 +187,14 @@ func main() {
 				// per-integration graceful degradation.
 				mux.Handle("POST /listings/{id}/order/shipping-label", verifier.RequireAuth(shipping.HandleBuyLabel(pool, shippingClient, pbClient)))
 				mux.Handle("GET /listings/{id}/order/shipping-label/download", verifier.RequireAuth(shipping.HandleDownloadLabel(pool)))
+			}
+			if shippingClient.IsConfigured() {
+				// Tracking is always a Shippo lookup regardless of which
+				// vendor sold the label (TrackShipment's own doc comment) —
+				// gated on shippingClient specifically, not pbClient, since
+				// there's no separate Pitney Bowes tracking path to fall
+				// back to.
+				mux.Handle("GET /listings/{id}/order/tracking", verifier.RequireAuth(shipping.HandleTrackShipment(pool, shippingClient)))
 			}
 
 			mux.Handle("GET /listings/{id}/order/claim", verifier.RequireAuth(dispute.HandleGetForListing(pool)))
@@ -217,6 +252,11 @@ func main() {
 		mux.Handle("POST /me/messages", verifier.RequireAuth(message.HandleStartThread(pool)))
 		mux.Handle("GET /me/messages/{id}", verifier.RequireAuth(message.HandleGetThread(pool)))
 		mux.Handle("POST /me/messages/{id}", verifier.RequireAuth(message.HandleSendMessage(pool)))
+		// Dev-only — real auth (RequireAuth), gated to non-production at
+		// runtime inside DevSimulateIncoming itself
+		// (message.AllowDevSimulateIncoming, set above), same shape as
+		// /me/seller/dev-tier-adjust and /listings/{id}/order/dev-advance.
+		mux.Handle("POST /me/messages/dev-simulate-incoming", verifier.RequireAuth(message.HandleDevSimulateIncoming(pool)))
 
 		mux.Handle("GET /listings/{id}/watch", verifier.RequireAuth(watchlist.HandleGetStatus(pool)))
 		mux.Handle("POST /listings/{id}/watch", verifier.RequireAuth(watchlist.HandleAdd(pool)))

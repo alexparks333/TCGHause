@@ -20,7 +20,7 @@ import {
   sellerTierIconSrc,
   shippingDisplayText,
 } from "@/lib/types";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatCompactCount } from "@/lib/format";
 import { useMsLeft } from "@/lib/useMsLeft";
 
 // eBay-style search-results row: a contained, single-photo carousel on the
@@ -392,7 +392,7 @@ export default function ListingRow({
               emptyClassName="fill-transparent text-black"
             />
             {listing.sellerReviewCount > 0
-              ? `${listing.sellerRatingAvg.toFixed(1)} (${listing.sellerReviewCount})`
+              ? `${listing.sellerRatingAvg.toFixed(1)} (${formatCompactCount(listing.sellerReviewCount)})`
               : "No reviews yet"}
           </span>
         </div>
@@ -445,7 +445,7 @@ export default function ListingRow({
               listing.buyerId ? "text-brand-urgent" : "text-gray-900"
             }`}
           >
-            {formatPrice(listing.priceCents ?? 0)}
+            {formatPrice(listing.soldPriceCents ?? listing.priceCents ?? 0)}
           </p>
         )}
       </div>

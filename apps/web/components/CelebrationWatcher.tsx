@@ -14,7 +14,7 @@ const POLL_MS = 3000;
 interface QueuedCelebration {
   key: string;
   item: CelebrationItem;
-  kind: "win" | "sale";
+  kind: "win" | "sale" | "review";
 }
 
 const PokeCelebrationsContext = createContext<() => void>(() => {});
@@ -30,11 +30,12 @@ export function usePokeCelebrations() {
   return useContext(PokeCelebrationsContext);
 }
 
-// Polls for any win/sale the current user hasn't been shown a celebration
-// for yet (migration 0014_win_celebrations) and plays them one at a time.
-// Wraps the whole app (app/layout.tsx) rather than sitting as a leaf
-// sibling, specifically so it can hand the poke function above down via
-// context to any descendant.
+// Polls for any win/sale/review the current user hasn't been shown a
+// celebration for yet (migration 0014_win_celebrations, widened by
+// 0048_review_celebrations) and plays them one at a time. Wraps the whole
+// app (app/layout.tsx) rather than sitting as a leaf sibling, specifically
+// so it can hand the poke function above down via context to any
+// descendant.
 export default function CelebrationWatcher({ children }: { children?: React.ReactNode }) {
   const [queue, setQueue] = useState<QueuedCelebration[]>([]);
   const seenKeys = useRef(new Set<string>());
@@ -47,10 +48,11 @@ export default function CelebrationWatcher({ children }: { children?: React.Reac
     if (!session) return;
 
     try {
-      const { wins, sales } = await getMyCelebrations();
+      const { wins, sales, reviews } = await getMyCelebrations();
       const fresh: QueuedCelebration[] = [
         ...wins.map((item) => ({ key: `win:${item.listingId}`, item, kind: "win" as const })),
         ...sales.map((item) => ({ key: `sale:${item.listingId}`, item, kind: "sale" as const })),
+        ...reviews.map((item) => ({ key: `review:${item.listingId}`, item, kind: "review" as const })),
       ].filter((c) => !seenKeys.current.has(c.key));
 
       if (fresh.length === 0) return;

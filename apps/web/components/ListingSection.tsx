@@ -13,6 +13,7 @@ export default function ListingSection({
   items,
   watchedIds,
   isLoggedIn = false,
+  currentUserId,
   myBidsByListingId,
   layout = "grid",
 }: {
@@ -22,6 +23,9 @@ export default function ListingSection({
   items: Listing[];
   watchedIds?: Set<string>;
   isLoggedIn?: boolean;
+  // Threaded straight through to ListingCard (ListingRow has no offer
+  // button, so it doesn't need this) — see ListingCard's own doc comment.
+  currentUserId?: string;
   myBidsByListingId?: Map<string, MyBid>;
   // "row" is the eBay-style search-results view (image left, details right,
   // one per line) — used only for search results. Everywhere else
@@ -77,6 +81,7 @@ export default function ListingSection({
               listing={listing}
               initialWatching={watchedIds?.has(listing.id) ?? false}
               isLoggedIn={isLoggedIn}
+              currentUserId={currentUserId}
               myBid={myBidsByListingId?.get(listing.id)}
               removeOnEnd
               onEnded={() =>

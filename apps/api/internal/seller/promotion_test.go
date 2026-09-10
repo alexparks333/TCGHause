@@ -10,7 +10,7 @@ func days(n int) time.Time {
 }
 
 // goodReviewCount/goodAverageRating are a passing review record — high
-// enough to clear even Haus Trust's bar (the strictest), since the gate is
+// enough to clear even Hous Trust's bar (the strictest), since the gate is
 // now scaled per target tier and a test's candidate promotion might jump
 // straight to any tier depending on order count. Every test below that
 // expects a promotion to actually succeed, or that means to isolate some
@@ -117,7 +117,7 @@ func TestDecideTier_PromotionBlockedByDisputeRateGate(t *testing.T) {
 	s := standing{
 		currentTier:      TierGold,
 		accountCreatedAt: days(400),
-		cumulativeOrders: 600,  // qualifies for Haus Trust on volume alone
+		cumulativeOrders: 600,  // qualifies for Hous Trust on volume alone
 		disputeRate90d:   0.03, // over the 2% promotion gate, under the 4% demotion trigger
 		reviewCount:      goodReviewCount,
 		averageRating:    goodAverageRating,
@@ -141,19 +141,19 @@ func TestDecideTier_DemotionDropsExactlyOneTier(t *testing.T) {
 	}
 }
 
-func TestDecideTier_DemotionFromHausTrustDropsToPlatinum(t *testing.T) {
-	// Haus Trust is application-only to get INTO, but demotion out of it
+func TestDecideTier_DemotionFromHousTrustDropsToPlatinum(t *testing.T) {
+	// Hous Trust is application-only to get INTO, but demotion out of it
 	// still steps down through the same tierOrder as every other tier —
 	// one step, landing on Platinum, never straight to New.
 	s := standing{
-		currentTier:      TierHausTrust,
+		currentTier:      TierHousTrust,
 		accountCreatedAt: days(1000),
 		cumulativeOrders: 1000,
 		disputeRate90d:   0.06,
 	}
 	tier, reason := decideTier(s)
 	if tier != TierPlatinum || reason != "dispute_demotion" {
-		t.Errorf("got (%v, %q), want (Platinum, dispute_demotion) — exactly one tier down from Haus Trust", tier, reason)
+		t.Errorf("got (%v, %q), want (Platinum, dispute_demotion) — exactly one tier down from Hous Trust", tier, reason)
 	}
 }
 
@@ -311,7 +311,7 @@ func TestTierForOrders(t *testing.T) {
 		{150, TierGold},
 		{499, TierGold},
 		{500, TierPlatinum},
-		// Order volume alone never reaches Haus Trust, no matter how high —
+		// Order volume alone never reaches Hous Trust, no matter how high —
 		// it's application-only (see volumeTierOrder's doc comment).
 		{10000, TierPlatinum},
 	}
@@ -322,14 +322,14 @@ func TestTierForOrders(t *testing.T) {
 	}
 }
 
-func TestTierForOrders_NeverReturnsHausTrust(t *testing.T) {
+func TestTierForOrders_NeverReturnsHousTrust(t *testing.T) {
 	// Explicit regression test for the exact bug volumeTierOrder exists to
-	// prevent: TierHausTrust has no entry in tierThreshold, so a naive
+	// prevent: TierHousTrust has no entry in tierThreshold, so a naive
 	// implementation using the full tierOrder would treat its threshold as
 	// 0 and award it to literally every seller.
 	for _, n := range []int{0, 1, 500, 1000, 1000000} {
-		if got := tierForOrders(n); got == TierHausTrust {
-			t.Errorf("tierForOrders(%d) = Haus Trust — volume alone must never reach it", n)
+		if got := tierForOrders(n); got == TierHousTrust {
+			t.Errorf("tierForOrders(%d) = Hous Trust — volume alone must never reach it", n)
 		}
 	}
 }

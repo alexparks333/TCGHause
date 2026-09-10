@@ -9,29 +9,38 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/buyerreview"
+	"auctionhous-tcg/api/internal/feedback"
 	"auctionhous-tcg/api/internal/platform"
 )
 
-var ErrInvalidCelebrationKind = errors.New(`kind must be "win" or "sale"`)
+var ErrInvalidCelebrationKind = errors.New(`kind must be "win", "sale", or "review"`)
 
-// CelebrationItem is one listing a "Bid Won!" / "Item Sold!" toast should
-// show — just enough to render the toast and link back to the listing,
-// not the full Listing shape.
+// CelebrationItem is one listing a "Bid Won!" / "Item Sold!" / "New
+// Review!" toast should show — just enough to render the toast and link
+// back to the listing, not the full Listing shape. PriceCents is what a
+// win/sale toast shows; Rating is what a review toast shows instead — the
+// two are mutually exclusive depending on which list (Wins/Sales vs
+// Reviews) an item came from, not both populated at once.
 type CelebrationItem struct {
-	ListingID  string `json:"listingId"`
-	Title      string `json:"title"`
-	ImageURL   string `json:"imageUrl,omitempty"`
-	PriceCents int64  `json:"priceCents"`
+	ListingID  string   `json:"listingId"`
+	Title      string   `json:"title"`
+	ImageURL   string   `json:"imageUrl,omitempty"`
+	PriceCents int64    `json:"priceCents"`
+	Rating     *float64 `json:"rating,omitempty"`
 }
 
-// Celebrations is every closed-auction outcome the caller hasn't been
-// shown a celebration for yet — Wins from the buyer side, Sales from the
-// seller side. A caller can appear in both lists at once (won one auction,
-// sold another) but never twice in the same list for the same listing,
-// since AckCelebration is what stops it from being returned again.
+// Celebrations is every closed-auction outcome (or new review) the caller
+// hasn't been shown a celebration for yet — Wins/Sales from a completed
+// purchase, Reviews from either direction (a buyer reviewing the seller,
+// or the seller reviewing the buyer back). A caller can appear in more
+// than one list at once, but never twice in the same list for the same
+// listing, since AckCelebration is what stops it from being returned
+// again.
 type Celebrations struct {
-	Wins  []CelebrationItem `json:"wins"`
-	Sales []CelebrationItem `json:"sales"`
+	Wins    []CelebrationItem `json:"wins"`
+	Sales   []CelebrationItem `json:"sales"`
+	Reviews []CelebrationItem `json:"reviews"`
 }
 
 func queryCelebrationItems(ctx context.Context, pool *pgxpool.Pool, query, userID string) ([]CelebrationItem, error) {
@@ -77,7 +86,7 @@ func PendingCelebrations(ctx context.Context, pool *pgxpool.Pool, userID string)
 		return nil, err
 	}
 	fixedWins, err := queryCelebrationItems(ctx, pool, `
-		select l.id, l.title, l.image_urls, l.price_cents
+		select l.id, l.title, l.image_urls, coalesce(l.sold_price_cents, l.price_cents)
 		from listings l
 		where l.buyer_id = $1 and l.buyer_celebrated_at is null
 		order by l.sold_at asc
@@ -97,7 +106,7 @@ func PendingCelebrations(ctx context.Context, pool *pgxpool.Pool, userID string)
 		return nil, err
 	}
 	fixedSales, err := queryCelebrationItems(ctx, pool, `
-		select l.id, l.title, l.image_urls, l.price_cents
+		select l.id, l.title, l.image_urls, coalesce(l.sold_price_cents, l.price_cents)
 		from listings l
 		where l.seller_id = $1 and l.buyer_id is not null and l.seller_celebrated_at is null
 		order by l.sold_at asc
@@ -106,10 +115,35 @@ func PendingCelebrations(ctx context.Context, pool *pgxpool.Pool, userID string)
 		return nil, err
 	}
 
+	sellerReviews, err := feedback.PendingSellerReviewCelebrations(ctx, pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	buyerReviews, err := buyerreview.PendingBuyerReviewCelebrations(ctx, pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	reviews := make([]CelebrationItem, 0, len(sellerReviews)+len(buyerReviews))
+	for _, r := range sellerReviews {
+		reviews = append(reviews, reviewCelebrationItem(r.ListingID, r.Title, r.ImageURLs, r.Rating))
+	}
+	for _, r := range buyerReviews {
+		reviews = append(reviews, reviewCelebrationItem(r.ListingID, r.Title, r.ImageURLs, r.Rating))
+	}
+
 	return &Celebrations{
-		Wins:  append(auctionWins, fixedWins...),
-		Sales: append(auctionSales, fixedSales...),
+		Wins:    append(auctionWins, fixedWins...),
+		Sales:   append(auctionSales, fixedSales...),
+		Reviews: reviews,
 	}, nil
+}
+
+func reviewCelebrationItem(listingID, title string, imageURLs []string, rating float64) CelebrationItem {
+	item := CelebrationItem{ListingID: listingID, Title: title, Rating: &rating}
+	if len(imageURLs) > 0 {
+		item.ImageURL = imageURLs[0]
+	}
+	return item
 }
 
 // AckCelebration marks listingID's win or sale celebration as shown to
@@ -157,6 +191,20 @@ func AckCelebration(ctx context.Context, pool *pgxpool.Pool, userID, listingID, 
 			update listings set seller_celebrated_at = now()
 			where id = $1 and seller_id = $2 and buyer_id is not null and seller_celebrated_at is null
 		`
+	case "review":
+		// A review celebration always came from exactly one of
+		// feedback/buyerreview's own tables (never both for the same
+		// listing+user), so trying both here is the same "harmless no-op
+		// on whichever one doesn't apply" pattern as the win/sale cases
+		// above — just delegated to those packages instead of inlining
+		// their schema here.
+		if err := feedback.AckSellerReviewCelebration(ctx, pool, userID, listingID); err != nil {
+			return fmt.Errorf("ack celebration (seller review): %w", err)
+		}
+		if err := buyerreview.AckBuyerReviewCelebration(ctx, pool, userID, listingID); err != nil {
+			return fmt.Errorf("ack celebration (buyer review): %w", err)
+		}
+		return nil
 	default:
 		return ErrInvalidCelebrationKind
 	}
@@ -205,7 +253,7 @@ func HandleAckCelebration(pool *pgxpool.Pool) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if in.Kind != "win" && in.Kind != "sale" {
+		if in.Kind != "win" && in.Kind != "sale" && in.Kind != "review" {
 			http.Error(w, ErrInvalidCelebrationKind.Error(), http.StatusBadRequest)
 			return
 		}

@@ -14,6 +14,23 @@ export const ORDER_STEPS: { state: OrderState; label: string }[] = [
   { state: "released", label: "Released to seller" },
 ];
 
+// created/payment_pending both precede real payment completion (design doc
+// v2 §5's created -> payment_pending -> paid chain) but aren't listed steps
+// of their own — a plain ORDER_STEPS.findIndex on either returns -1 (every
+// bubble gray, nothing "current"), which used to be harmless because no
+// order was ever actually observed sitting in one of those two states. Now
+// that a won-via-bidding auction gets a real, unpaid order row the instant
+// it closes (internal/auction/close.go's createPendingOrderForWin), both
+// states are real and need to render as the Paid step's current bubble.
+const STEP_ALIASES: Partial<Record<OrderState, OrderState>> = {
+  created: "paid",
+  payment_pending: "paid",
+};
+
+export function stepIndexForState(state: OrderState): number {
+  return ORDER_STEPS.findIndex((s) => s.state === (STEP_ALIASES[state] ?? state));
+}
+
 // A terminal state (refunded/cancelled) or claim_open falls outside the
 // happy-path steps above — rendered as its own line rather than forced
 // onto the linear timeline, since it isn't a step in a sequence so much as

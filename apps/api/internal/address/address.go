@@ -60,17 +60,79 @@ func Get(ctx context.Context, pool *pgxpool.Pool, userID string) (*Address, erro
 	return &a, nil
 }
 
+// usCountryVariants are the free-text spellings of "United States" a real
+// person types into a plain text Country field (AddressForm.tsx has no
+// dropdown/autocomplete) — found live: a real dev-account address stored
+// "USA", which Shippo silently tolerated but Pitney Bowes' Shipping 360
+// API rejected outright ("invalid originCountryCode, it should be valid 2
+// characters ISO code"). Scoped to US-only variants because the app itself
+// is domestic-only in v1 (CLAUDE.md §6.11) — this isn't a general
+// country-name-to-ISO-code table, just closing the one gap that made two
+// vendors disagree on the same stored address.
+var usCountryVariants = map[string]bool{
+	"usa":                      true,
+	"us":                       true,
+	"u.s.":                     true,
+	"u.s.a.":                   true,
+	"united states":            true,
+	"united states of america": true,
+}
+
+// Normalize maps free-text country spellings to the ISO 3166-1 alpha-2
+// code every shipping vendor actually requires, and trims the rest of the
+// fields. Called before Validate on every write path (Upsert, and
+// internal/shipping.HandleBuyLabel's one-time from-address override) so
+// neither Shippo nor Pitney Bowes ever sees an address this permissive
+// free-text field let through un-normalized.
+func Normalize(a Address) Address {
+	a.FullName = strings.TrimSpace(a.FullName)
+	a.Line1 = strings.TrimSpace(a.Line1)
+	if a.Line2 != nil {
+		trimmed := strings.TrimSpace(*a.Line2)
+		a.Line2 = &trimmed
+	}
+	a.City = strings.TrimSpace(a.City)
+	a.State = strings.TrimSpace(a.State)
+	a.PostalCode = strings.TrimSpace(a.PostalCode)
+	if usCountryVariants[strings.ToLower(strings.TrimSpace(a.Country))] {
+		a.Country = "US"
+	} else {
+		a.Country = strings.TrimSpace(a.Country)
+	}
+	if a.Phone != nil {
+		trimmed := strings.TrimSpace(*a.Phone)
+		a.Phone = &trimmed
+	}
+	return a
+}
+
+// Validate reports whether a is complete enough to ship or mail with —
+// every field but Line2 required, Phone included (Shippo's label purchase
+// rejects any shipment missing a phone number on either address, see
+// Address's own doc comment). Shared by Upsert and by
+// internal/shipping.HandleBuyLabel's per-order from-address override,
+// which never goes through Upsert (that override is a one-time
+// substitution for a single label purchase, deliberately never written to
+// this package's own table — see that handler's doc comment).
+func Validate(a Address) error {
+	if strings.TrimSpace(a.FullName) == "" ||
+		strings.TrimSpace(a.Line1) == "" ||
+		strings.TrimSpace(a.City) == "" ||
+		strings.TrimSpace(a.State) == "" ||
+		strings.TrimSpace(a.PostalCode) == "" ||
+		strings.TrimSpace(a.Country) == "" ||
+		a.Phone == nil || strings.TrimSpace(*a.Phone) == "" {
+		return ErrInvalidInput
+	}
+	return nil
+}
+
 // Upsert saves userID's address, replacing whatever was there before — an
 // address has no history to preserve, unlike a review or a listing.
 func Upsert(ctx context.Context, pool *pgxpool.Pool, userID string, in Address) (*Address, error) {
-	if strings.TrimSpace(in.FullName) == "" ||
-		strings.TrimSpace(in.Line1) == "" ||
-		strings.TrimSpace(in.City) == "" ||
-		strings.TrimSpace(in.State) == "" ||
-		strings.TrimSpace(in.PostalCode) == "" ||
-		strings.TrimSpace(in.Country) == "" ||
-		in.Phone == nil || strings.TrimSpace(*in.Phone) == "" {
-		return nil, ErrInvalidInput
+	in = Normalize(in)
+	if err := Validate(in); err != nil {
+		return nil, err
 	}
 
 	_, err := pool.Exec(ctx, `

@@ -117,6 +117,33 @@ func HandleSendMessage(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+// HandleDevSimulateIncoming backs the dev panel's "Get a Message" button —
+// sends one real message from some other real user to the caller so the
+// caller's own poll picks it up as a genuine incoming message. Double-gated
+// on AllowDevSimulateIncoming: DevSimulateIncoming itself refuses to run
+// outside development regardless of whether this route is somehow reached,
+// same belt-and-suspenders shape as every other dev-only route in this
+// codebase.
+func HandleDevSimulateIncoming(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := platform.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if err := DevSimulateIncoming(r.Context(), pool, userID); err != nil {
+			switch {
+			case errors.Is(err, ErrDevSimulateDisabled), errors.Is(err, ErrNoOtherUsers):
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func writeMessageError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):

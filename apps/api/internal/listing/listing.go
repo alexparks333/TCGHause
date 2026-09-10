@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"auctionhous-tcg/api/internal/address"
@@ -36,6 +37,9 @@ var (
 	ErrAlreadySold         = errors.New("this listing has already sold")
 	ErrNotFixedFormat      = errors.New("this listing is not a fixed-price listing")
 	ErrSellerNotOnboarded  = errors.New("you need to finish setting up payouts before you can list an item")
+	ErrNotOwner            = errors.New("you don't own this listing")
+	ErrNotActive           = errors.New("this listing is no longer active")
+	ErrHasBids             = errors.New("this auction already has bids and can't be removed")
 )
 
 // AllowDevDurations gates the short (1/2/5-minute) auction durations used to
@@ -144,11 +148,21 @@ type Listing struct {
 	// buyers have a real number before the actual checkout-time quote.
 	// Nil for every other preset (their cost is either $0 or the fixed
 	// TrackedEnvelopeCents, no estimate needed).
-	EstimatedShippingCents *int64    `json:"estimatedShippingCents,omitempty"`
-	ImageUrls              []string  `json:"imageUrls"`
-	WatcherCount           int       `json:"watcherCount"`
-	Status                 string    `json:"status"`
-	CreatedAt              time.Time `json:"createdAt"`
+	EstimatedShippingCents *int64 `json:"estimatedShippingCents,omitempty"`
+	// RequestSignature is derived server-side (never client-supplied) from
+	// whichever price the seller submitted at Create/Update time — see
+	// shipping.RequestSignatureFromPrice. Distinct from the mandatory
+	// $500-final-sale-price rule (shipping.SignatureRequiredCents): this
+	// one fires off the listing's own starting bid/Buy It Now price, so a
+	// seller listing something valuable gets locked into signature
+	// confirmation from the moment the listing goes live, not just once it
+	// actually sells for enough. shipping.UpgradePreset ORs the two rules
+	// together at sale time.
+	RequestSignature bool      `json:"requestSignature"`
+	ImageUrls        []string  `json:"imageUrls"`
+	WatcherCount     int       `json:"watcherCount"`
+	Status           string    `json:"status"`
+	CreatedAt        time.Time `json:"createdAt"`
 
 	StartingBidCents  *int64     `json:"startingBidCents,omitempty"`
 	CurrentPriceCents *int64     `json:"currentPriceCents,omitempty"`
@@ -162,6 +176,16 @@ type Listing struct {
 	// from before this existed. A fixed-format listing doesn't need this
 	// field at all — its own PriceCents already is its Buy It Now price.
 	BuyItNowPriceCents *int64 `json:"buyItNowPriceCents,omitempty"`
+
+	// AllowOffers/MinOfferCents (migration 0049) gate internal/offer's real
+	// offer flow — a buyer can send an offer on this listing at all only
+	// when AllowOffers is true, and only at or above MinOfferCents when the
+	// seller set one. Only ever meaningful alongside a real Buy It Now
+	// price (this listing's own PriceCents for a fixed listing,
+	// BuyItNowPriceCents for an auction) — Create refuses to set
+	// AllowOffers otherwise.
+	AllowOffers   bool   `json:"allowOffers"`
+	MinOfferCents *int64 `json:"minOfferCents,omitempty"`
 
 	// Outcome is set once cmd/worker's auction-close pass, or a Buy It Now
 	// purchase (internal/auction/buynow.go), has processed this listing:
@@ -181,6 +205,19 @@ type Listing struct {
 	// fact is ClosedAt above). Both nil until bought.
 	BuyerID *string    `json:"buyerId,omitempty"`
 	SoldAt  *time.Time `json:"soldAt,omitempty"`
+
+	// SoldPriceCents is only set when a fixed-format listing sold for
+	// something other than its own PriceCents — currently that's only an
+	// accepted offer (internal/offer.Accept), which closes the listing at
+	// the negotiated amount instead of the asking price. Nil means "sold at
+	// PriceCents" (a plain Buy It Now purchase, or not sold at all yet) —
+	// checkout.go and buynow.go's subtotal derivation both prefer this over
+	// PriceCents when present, so an accepted offer is never overcharged
+	// the original asking price at payment time. An auction's equivalent
+	// negotiated price just overwrites CurrentPriceCents directly (there's
+	// no separate "asking price" to preserve for an auction the way a fixed
+	// listing's PriceCents needs to be), so this field is fixed-only.
+	SoldPriceCents *int64 `json:"soldPriceCents,omitempty"`
 
 	// PaidAt is set only when a real Stripe capture actually succeeded for
 	// this purchase (internal/auction.HandleBuyNow, after the atomic
@@ -223,6 +260,14 @@ type CreateInput struct {
 	// alone is Format=fixed (its own PriceCents is the Buy It Now price);
 	// "both" is Format=auction with this set to a real price.
 	BuyItNowPriceCents int64 `json:"buyItNowPriceCents"`
+	// AllowOffers/MinOfferCents mirror Listing's own fields — only valid
+	// when a real Buy It Now price exists (PriceCents for fixed,
+	// BuyItNowPriceCents for auction), see Create's validation. Zero-value
+	// MinOfferCents (0, the JSON default when the field is omitted) means
+	// "no minimum set" — a seller who allows offers without picking a
+	// floor accepts any positive amount below the BIN price.
+	AllowOffers   bool  `json:"allowOffers"`
+	MinOfferCents int64 `json:"minOfferCents"`
 	// ShippingPreset is one of shipping.Preset's five values — defaults to
 	// PresetTrackedEnvelope when empty (matching the column's own db
 	// default), validated in Create against Preset.Valid() plus the
@@ -242,11 +287,12 @@ const selectColumns = `
 	u.tier,
 	l.title, l.game, l.set_name, l.card_number, l.rarity, l.condition,
 	l.is_graded, l.grading_company, l.grade, l.cert_number, l.format, l.price_cents,
-	l.shipping_preset, l.estimated_shipping_cents, l.image_urls,
+	l.shipping_preset, l.estimated_shipping_cents, l.request_signature, l.image_urls,
 	(select count(*) from watchlist w where w.listing_id = l.id) as watcher_count,
 	l.status, l.created_at, l.buyer_id, l.sold_at,
 	a.starting_bid_cents, a.current_price_cents, a.high_bidder_id, a.bid_count, a.ends_at, a.outcome,
-	a.buy_it_now_price_cents, a.closed_at, coalesce(l.paid_at, a.paid_at), bu.username
+	a.buy_it_now_price_cents, a.closed_at, coalesce(l.paid_at, a.paid_at), bu.username,
+	l.allow_offers, l.min_offer_cents, l.sold_price_cents
 `
 const fromClause = `
 	from listings l
@@ -266,9 +312,10 @@ func scanListing(row rowScanner) (Listing, error) {
 		&lst.ID, &lst.SellerID, &lst.SellerUsername, &lst.SellerRatingAvg, &lst.SellerReviewCount, &lst.SellerTier,
 		&lst.Title, &lst.Game, &lst.SetName, &lst.CardNumber, &lst.Rarity, &lst.Condition,
 		&lst.IsGraded, &lst.GradingCompany, &lst.Grade, &lst.CertNumber, &format, &lst.PriceCents,
-		&lst.ShippingPreset, &lst.EstimatedShippingCents, &lst.ImageUrls, &lst.WatcherCount, &lst.Status, &lst.CreatedAt, &lst.BuyerID, &lst.SoldAt,
+		&lst.ShippingPreset, &lst.EstimatedShippingCents, &lst.RequestSignature, &lst.ImageUrls, &lst.WatcherCount, &lst.Status, &lst.CreatedAt, &lst.BuyerID, &lst.SoldAt,
 		&lst.StartingBidCents, &lst.CurrentPriceCents, &lst.HighBidderID, &lst.BidCount, &lst.EndsAt, &lst.Outcome,
 		&lst.BuyItNowPriceCents, &lst.ClosedAt, &lst.PaidAt, &lst.BuyerUsername,
+		&lst.AllowOffers, &lst.MinOfferCents, &lst.SoldPriceCents,
 	)
 	if err != nil {
 		return Listing{}, err
@@ -315,6 +362,42 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 		if in.BuyItNowPriceCents <= in.StartingBidCents {
 			return nil, fmt.Errorf("%w: buyItNowPriceCents must be greater than startingBidCents", ErrInvalidInput)
 		}
+	}
+	// A real Buy It Now price to measure offers against: a fixed listing's
+	// own price, or an auction's optional buyItNowPriceCents (0/unset if
+	// the seller didn't add one) — never the auction's starting bid, since
+	// that isn't a real asking price an offer is "below."
+	binPriceCents := in.PriceCents
+	if in.Format == FormatAuction {
+		binPriceCents = in.BuyItNowPriceCents
+	}
+	// The listing-time signature-request heuristic (shipping.
+	// RequestSignatureFromPrice) — the "amount" it's checked against is
+	// whichever of the listing's own prices is highest and already known
+	// at creation time: a fixed listing's own price, an auction's Buy It
+	// Now price if it has one, or its starting bid otherwise. Never the
+	// eventual final sale price (unknowable yet for an auction) — that's
+	// shipping.SignatureRequiredCents' job, applied later at sale time and
+	// ORed with this one in shipping.UpgradePreset.
+	referencePriceCents := binPriceCents
+	if in.Format == FormatAuction && in.StartingBidCents > referencePriceCents {
+		referencePriceCents = in.StartingBidCents
+	}
+	requestSignature := shipping.RequestSignatureFromPrice(referencePriceCents)
+	if in.AllowOffers {
+		if binPriceCents <= 0 {
+			return nil, fmt.Errorf("%w: allowOffers requires a Buy It Now price", ErrInvalidInput)
+		}
+		if in.MinOfferCents != 0 {
+			if in.MinOfferCents <= 0 {
+				return nil, fmt.Errorf("%w: minOfferCents must be positive", ErrInvalidInput)
+			}
+			if in.MinOfferCents >= binPriceCents {
+				return nil, fmt.Errorf("%w: minOfferCents must be less than the Buy It Now price", ErrInvalidInput)
+			}
+		}
+	} else if in.MinOfferCents != 0 {
+		return nil, fmt.Errorf("%w: minOfferCents only applies when allowOffers is true", ErrInvalidInput)
 	}
 	if len(in.ImageUrls) == 0 && !AllowMissingPhotos {
 		return nil, fmt.Errorf("%w: at least one photo is required", ErrInvalidInput)
@@ -364,7 +447,7 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 	if preset == shipping.PresetShippoGroundAdvantage && shippoClient.IsConfigured() {
 		if sellerAddr, err := address.Get(ctx, pool, sellerID); err == nil {
 			if sellerUser, err := user.Get(ctx, pool, sellerID); err == nil {
-				if cents, err := shippoClient.QuoteRate(ctx, sellerAddr, shipping.ReferenceAddress, sellerUser.Email, sellerUser.Email, preset); err == nil {
+				if cents, err := shippoClient.QuoteRate(ctx, sellerAddr, shipping.ReferenceAddress, sellerUser.Email, sellerUser.Email, preset, requestSignature); err == nil {
 					estimatedShippingCents = &cents
 				}
 			}
@@ -387,17 +470,22 @@ func Create(ctx context.Context, pool *pgxpool.Pool, sellerID string, in CreateI
 		imageUrls = []string{}
 	}
 
+	var minOfferCents *int64
+	if in.AllowOffers && in.MinOfferCents > 0 {
+		minOfferCents = &in.MinOfferCents
+	}
+
 	var id string
 	err = tx.QueryRow(ctx, `
 		insert into listings (seller_id, title, game, set_name, card_number, rarity, condition,
 			is_graded, grading_company, grade, cert_number, format, price_cents,
-			shipping_preset, estimated_shipping_cents, image_urls)
-		values ($1,$2,$3,$4,nullif($5,''),nullif($6,''),$7,$8,nullif($9,''),nullif($10,''),nullif($11,''),$12,$13,$14,$15,$16)
+			shipping_preset, estimated_shipping_cents, request_signature, image_urls, allow_offers, min_offer_cents)
+		values ($1,$2,$3,$4,nullif($5,''),nullif($6,''),$7,$8,nullif($9,''),nullif($10,''),nullif($11,''),$12,$13,$14,$15,$16,$17,$18,$19)
 		returning id
 	`,
 		sellerID, in.Title, in.Game, in.SetName, in.CardNumber, in.Rarity, in.Condition,
 		in.IsGraded, in.GradingCompany, in.Grade, in.CertNumber, string(in.Format), priceCents,
-		shippingPreset, estimatedShippingCents, imageUrls,
+		shippingPreset, estimatedShippingCents, requestSignature, imageUrls, in.AllowOffers, minOfferCents,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert listing: %w", err)
@@ -496,9 +584,322 @@ func Get(ctx context.Context, pool *pgxpool.Pool, id string) (*Listing, error) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
+		// id isn't valid uuid syntax at all (a stale/hand-edited/bot-probed
+		// URL, or — see CelebrationToast — a synthetic dev-test id that was
+		// never a real listing) — that's "not found," not a server error,
+		// same as ErrNoRows above.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("query listing: %w", err)
 	}
 	return &lst, nil
+}
+
+// Cancel is a "delete listing" as far as the Selling page is concerned, but
+// never a real row deletion — orders, bids, watchlist entries, offers, and
+// notifications all reference listings.id by foreign key, and a sold
+// listing's own order/dispute/shipping history has to keep resolving
+// against it. status already had 'cancelled' in its check constraint since
+// the very first listings migration (0003) — this is that value's first
+// real caller. ListActive's own status filter (l.status = any('active',
+// 'ended')) means a cancelled listing just stops showing up anywhere
+// active, same mechanism an auction ending naturally already uses.
+func Cancel(ctx context.Context, pool *pgxpool.Pool, id, sellerID string) error {
+	lst, err := Get(ctx, pool, id)
+	if err != nil {
+		return err
+	}
+	if lst.SellerID != sellerID {
+		return ErrNotOwner
+	}
+	if lst.Status != "active" {
+		return ErrNotActive
+	}
+	// Mirrors eBay's own restriction on ending a listing early once
+	// bidding has started — a bidder who's already committed shouldn't
+	// have the item pulled out from under them. A fixed-price listing has
+	// no bidders to protect, so it only needs the still-active check above.
+	if lst.Format == FormatAuction && lst.BidCount != nil && *lst.BidCount > 0 {
+		return ErrHasBids
+	}
+	if _, err := pool.Exec(ctx, `update listings set status = 'cancelled' where id = $1`, id); err != nil {
+		return fmt.Errorf("cancel listing: %w", err)
+	}
+	return nil
+}
+
+// UpdateInput backs the Selling page's Edit Listing form — deliberately
+// modeled on eBay's own real "revise a listing" rules (confirmed against
+// eBay's seller help docs), not an app-invented policy. Game and Condition
+// still never change through this endpoint (game defines the whole
+// item-specifics schema, §6.2; condition is a claim the buyer weighs when
+// bidding/buying and is safer left to a fresh listing). Title, Set, Card
+// Number, and Rarity, and the photos, are editable — see below — under the
+// same rule as everything else here: what's actually editable depends
+// entirely on format and bid state:
+//
+//   - Fixed-price ("Buy It Now only," no auction involved): price can move
+//     up or down, and shipping is fully editable, any time before it sells
+//     — "a regular person selling it," no auction mechanics to protect.
+//   - Auction, no bids yet: starting bid and Buy It Now price can only be
+//     LOWERED (never raised) or, for Buy It Now, removed entirely — eBay's
+//     revise function is decrease-only for exactly the same reason (a buyer
+//     who's seen the listing shouldn't have the price quietly raised on
+//     them). Shipping is still editable. A Buy It Now price CAN be added
+//     fresh even if none existed, same as eBay's "add Buy It Now" upgrade.
+//   - Auction, one or more bids: nothing here is editable at all. Real
+//     eBay locks price and shipping the instant a bid lands — Update
+//     rejects with ErrHasBids before looking at any field, matching Cancel's
+//     own bid guard. (PlaceBid also clears buy_it_now_price_cents itself
+//     the moment a bid lands, mirroring eBay's Buy It Now actually
+//     disappearing from a non-reserve auction the instant bidding starts —
+//     so by the time Update would run, there's rarely even a BIN left to
+//     protect.)
+//
+// Photos (ImageUrls) and the identity fields below (Title/SetName/
+// CardNumber/Rarity) all follow the exact same editable/locked split as
+// price and shipping — added, changed, or reordered freely right up until
+// the same moment everything else locks (a bid landing), never singled out
+// with a separate rule. Every real photo change is recorded to
+// listing_photo_edits (see recordPhotoEdit) before/after, specifically so a
+// "the seller swapped the photos at the last second" dispute claim can be
+// checked against a real log instead of taken on faith — identity-field
+// edits (title/set/card number/rarity) aren't separately logged the same
+// way; only the photos ever carried that specific "was this switched at
+// the last second" fraud concern.
+type UpdateInput struct {
+	// Title/SetName/CardNumber/Rarity mirror CreateInput's own fields
+	// exactly (same JSON keys, same "empty string means unset" convention
+	// for the optional three) — Title is required and trimmed the same way
+	// Create requires it; SetName/CardNumber/Rarity may be blank.
+	Title      string `json:"title"`
+	SetName    string `json:"set"`
+	CardNumber string `json:"cardNumber"`
+	Rarity     string `json:"rarity"`
+	// StartingBidCents only applies to an auction with no bids yet — must
+	// be positive and <= the current starting bid (lower or equal, never
+	// higher). Zero/omitted means "leave the starting bid as-is."
+	StartingBidCents int64 `json:"startingBidCents"`
+	// PriceCents is the Buy It Now price: a fixed-format listing's own
+	// asking price (required, >0, any direction), or a pre-bid auction's
+	// optional add-on (0 means "no Buy It Now" / removes an existing one;
+	// a positive value must be <= any existing Buy It Now price, or any
+	// positive amount if none existed yet).
+	PriceCents     int64  `json:"priceCents"`
+	AllowOffers    bool   `json:"allowOffers"`
+	MinOfferCents  int64  `json:"minOfferCents"`
+	ShippingPreset string `json:"shippingPreset"`
+	// ImageUrls is the full, authoritative photo list in its final order
+	// (not a delta) — same "client sends the whole current state" shape as
+	// Create's own ImageUrls. Must be non-empty: a listing can't be edited
+	// down to zero photos, same floor Create enforces at creation time.
+	ImageUrls []string `json:"imageUrls"`
+}
+
+// Update applies the Selling page's Edit Listing form — see UpdateInput's
+// own doc comment for exactly what's allowed and why. shippoClient mirrors
+// Create's own use of it: only consulted when the (possibly newly-picked)
+// preset is shippo_ground_advantage, to refresh the live rate estimate: a
+// preset switch that leaves an old preset's stale estimate sitting on a
+// shippo_ground_advantage listing would be exactly the kind of fabricated-
+// looking number this codebase avoids elsewhere. A quote failure is never
+// fatal — same graceful-degradation posture as Create.
+func Update(ctx context.Context, pool *pgxpool.Pool, id, sellerID string, in UpdateInput, shippoClient *shipping.Client) (*Listing, error) {
+	lst, err := Get(ctx, pool, id)
+	if err != nil {
+		return nil, err
+	}
+	if lst.SellerID != sellerID {
+		return nil, ErrNotOwner
+	}
+	if lst.Status != "active" {
+		return nil, ErrNotActive
+	}
+	// Real eBay: once an auction has a bid, revise is blocked outright —
+	// not "some fields," all of them. Checked before any field-level
+	// validation below, so a bid always wins over anything the client sent.
+	if lst.Format == FormatAuction && lst.BidCount != nil && *lst.BidCount > 0 {
+		return nil, ErrHasBids
+	}
+
+	if strings.TrimSpace(in.Title) == "" {
+		return nil, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+	if len(in.ImageUrls) == 0 {
+		return nil, fmt.Errorf("%w: at least one photo is required", ErrInvalidInput)
+	}
+	// Order-sensitive on purpose — a pure reorder (same URLs, new order) is
+	// still a real edit worth logging, not just an add/remove.
+	photosChanged := !stringSlicesEqual(lst.ImageUrls, in.ImageUrls)
+
+	shippingPresetStr := in.ShippingPreset
+	if shippingPresetStr == "" {
+		shippingPresetStr = string(lst.ShippingPreset)
+	}
+	preset := shipping.Preset(shippingPresetStr)
+	if !preset.Valid() {
+		return nil, fmt.Errorf("%w: shippingPreset must be one of the 5 valid presets", ErrInvalidInput)
+	}
+
+	var startingBidCents int64
+	var binPriceCents int64
+
+	if lst.Format == FormatFixed {
+		if in.PriceCents <= 0 {
+			return nil, fmt.Errorf("%w: priceCents must be positive", ErrInvalidInput)
+		}
+		binPriceCents = in.PriceCents
+		// Same $100+ free-envelope/tracked-envelope guard Create enforces
+		// — a fixed listing's final price is already known, unlike an
+		// auction's, so this is checkable here the same way.
+		if preset.Mechanism() == shipping.MechanismLetter && binPriceCents >= shipping.PackageRequiredCents {
+			if preset.IsFree() {
+				return nil, fmt.Errorf("%w: free envelope shipping isn't available on listings priced at $100 or more — pick free bubble mailer, free box, or a paid preset", ErrInvalidInput)
+			}
+			return nil, fmt.Errorf("%w: tracked envelope shipping isn't available on listings priced at $100 or more", ErrInvalidInput)
+		}
+	} else {
+		// Auction, guaranteed zero bids past the ErrHasBids check above.
+		if lst.StartingBidCents != nil {
+			startingBidCents = *lst.StartingBidCents
+		}
+		if in.StartingBidCents != 0 {
+			if in.StartingBidCents <= 0 {
+				return nil, fmt.Errorf("%w: startingBidCents must be positive", ErrInvalidInput)
+			}
+			if in.StartingBidCents > startingBidCents {
+				return nil, fmt.Errorf("%w: the starting bid can only be lowered, never raised, once a listing is live", ErrInvalidInput)
+			}
+			startingBidCents = in.StartingBidCents
+		}
+
+		existingBin := int64(0)
+		if lst.BuyItNowPriceCents != nil {
+			existingBin = *lst.BuyItNowPriceCents
+		}
+		if in.PriceCents > 0 {
+			if existingBin > 0 && in.PriceCents > existingBin {
+				return nil, fmt.Errorf("%w: a Buy It Now price can only be lowered, never raised, once a listing is live", ErrInvalidInput)
+			}
+			if in.PriceCents <= startingBidCents {
+				return nil, fmt.Errorf("%w: buyItNowPriceCents must be greater than the starting bid", ErrInvalidInput)
+			}
+			binPriceCents = in.PriceCents
+		}
+		// in.PriceCents == 0 means "no Buy It Now" — either it's being
+		// removed (existingBin was > 0) or there never was one; both leave
+		// binPriceCents at its zero value, exactly like Create's own
+		// "0 means unset" convention.
+	}
+
+	// Same listing-time signature-request heuristic as Create — recomputed
+	// fresh from whatever price is in effect after this edit (never just
+	// carried over from lst.RequestSignature), so raising a Buy It Now
+	// price past the threshold on an edit locks it on immediately, exactly
+	// like a fresh listing would.
+	referencePriceCents := binPriceCents
+	if referencePriceCents < startingBidCents {
+		referencePriceCents = startingBidCents
+	}
+	requestSignature := shipping.RequestSignatureFromPrice(referencePriceCents)
+
+	if in.AllowOffers {
+		if binPriceCents <= 0 {
+			return nil, fmt.Errorf("%w: allowOffers requires a Buy It Now price", ErrInvalidInput)
+		}
+		if in.MinOfferCents != 0 {
+			if in.MinOfferCents <= 0 {
+				return nil, fmt.Errorf("%w: minOfferCents must be positive", ErrInvalidInput)
+			}
+			if in.MinOfferCents >= binPriceCents {
+				return nil, fmt.Errorf("%w: minOfferCents must be less than the Buy It Now price", ErrInvalidInput)
+			}
+		}
+	} else if in.MinOfferCents != 0 {
+		return nil, fmt.Errorf("%w: minOfferCents only applies when allowOffers is true", ErrInvalidInput)
+	}
+
+	var minOfferPtr *int64
+	if in.AllowOffers && in.MinOfferCents > 0 {
+		minOfferPtr = &in.MinOfferCents
+	}
+
+	// Same "quote before opening a transaction" reasoning as Create — a
+	// live Shippo HTTP call has no business holding a DB transaction open.
+	var estimatedShippingCents *int64
+	if preset == shipping.PresetShippoGroundAdvantage && shippoClient.IsConfigured() {
+		if sellerAddr, err := address.Get(ctx, pool, sellerID); err == nil {
+			if sellerUser, err := user.Get(ctx, pool, sellerID); err == nil {
+				if cents, err := shippoClient.QuoteRate(ctx, sellerAddr, shipping.ReferenceAddress, sellerUser.Email, sellerUser.Email, preset, requestSignature); err == nil {
+					estimatedShippingCents = &cents
+				}
+			}
+		}
+	}
+
+	// Always a transaction now, even on the fixed-price path — a photo
+	// change and its audit-log row (below) have to commit together, or a
+	// crash between the two would leave the log lying about what actually
+	// happened.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if lst.Format == FormatFixed {
+		if _, err := tx.Exec(ctx, `
+			update listings
+			set title = $1, set_name = $2, card_number = nullif($3, ''), rarity = nullif($4, ''),
+				price_cents = $5, allow_offers = $6, min_offer_cents = $7,
+				shipping_preset = $8, estimated_shipping_cents = $9, request_signature = $10, image_urls = $11
+			where id = $12
+		`, in.Title, in.SetName, in.CardNumber, in.Rarity, in.PriceCents, in.AllowOffers, minOfferPtr,
+			shippingPresetStr, estimatedShippingCents, requestSignature, in.ImageUrls, id); err != nil {
+			return nil, fmt.Errorf("update listing: %w", err)
+		}
+	} else {
+		var binPtr *int64
+		if binPriceCents > 0 {
+			binPtr = &binPriceCents
+		}
+		if _, err := tx.Exec(ctx, `
+			update listings
+			set title = $1, set_name = $2, card_number = nullif($3, ''), rarity = nullif($4, ''),
+				allow_offers = $5, min_offer_cents = $6, shipping_preset = $7, estimated_shipping_cents = $8,
+				request_signature = $9, image_urls = $10
+			where id = $11
+		`, in.Title, in.SetName, in.CardNumber, in.Rarity, in.AllowOffers, minOfferPtr,
+			shippingPresetStr, estimatedShippingCents, requestSignature, in.ImageUrls, id); err != nil {
+			return nil, fmt.Errorf("update listing: %w", err)
+		}
+		// current_price_cents tracks starting_bid_cents whenever there are
+		// still zero bids (Create seeds them equal; nothing since then
+		// would have moved current_price_cents on its own) — lowering the
+		// starting bid has to move both together, or "Current bid" would
+		// keep showing the old, higher starting price.
+		if _, err := tx.Exec(ctx, `
+			update auctions
+			set starting_bid_cents = $1, current_price_cents = $1, buy_it_now_price_cents = $2
+			where listing_id = $3
+		`, startingBidCents, binPtr, id); err != nil {
+			return nil, fmt.Errorf("update auction: %w", err)
+		}
+	}
+
+	if photosChanged {
+		if err := recordPhotoEdit(ctx, tx, id, sellerID, lst.ImageUrls, in.ImageUrls); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	return Get(ctx, pool, id)
 }
 
 // GetMany batch-fetches every listing in ids in a single query, keyed by

@@ -57,6 +57,20 @@ export type ShippingPreset =
   | "tracked_envelope"
   | "shippo_ground_advantage";
 
+// Mirrors apps/api/internal/auction.EndListingAction/EndListingReason
+// exactly — the "Delete Listing" choice a seller has to make once an
+// auction already has a bid (docs/EditListing.md has the eBay-parity
+// rules this was built from). Meaningless for a fixed-price listing or a
+// never-bid-on auction, which just delete outright with no body at all.
+export type EndListingAction = "sell_to_high_bidder" | "cancel_bids";
+export type EndListingReason = "lost_or_broken" | "error_in_listing" | "not_available";
+
+export const END_LISTING_REASON_LABELS: Record<EndListingReason, string> = {
+  lost_or_broken: "The item is lost or broken",
+  error_in_listing: "There was an error in the listing",
+  not_available: "The item is no longer available to sell",
+};
+
 export interface Listing {
   id: string;
   sellerId: string;
@@ -66,10 +80,10 @@ export interface Listing {
   sellerRatingAvg: number;
   sellerReviewCount: number;
   // Design doc v2 §3's trust tier — mirrors apps/api/internal/seller.Tier.
-  // Platinum sits between Gold and Haus Trust; Haus Trust is the top tier,
+  // Platinum sits between Gold and Hous Trust; Hous Trust is the top tier,
   // application-only, with an individually negotiated rate (see
   // sellerTierRate below).
-  sellerTier: "new" | "bronze" | "silver" | "gold" | "platinum" | "haus_trust";
+  sellerTier: "new" | "bronze" | "silver" | "gold" | "platinum" | "hous_trust";
   title: string;
   game: Game;
   set: string;
@@ -92,6 +106,12 @@ export interface Listing {
   // estimate computed when the listing was created (a real buyer address
   // isn't known yet, so this is never the guaranteed final cost).
   estimatedShippingCents?: number;
+  // Server-derived (never client-set) from whichever price was in effect
+  // at Create/Update time — see apps/api/internal/shipping.
+  // RequestSignatureFromPrice. Locks "Signature Required" on in
+  // ShippingPresetPicker once true; distinct from the $500-final-sale-price
+  // rule, which only resolves at sale time.
+  requestSignature: boolean;
   imageUrls: string[];
   watcherCount: number;
   status: string;
@@ -108,11 +128,24 @@ export interface Listing {
   // bidding entirely" price. Undefined means this is a plain auction.
   buyItNowPriceCents?: number;
 
-  // Set once cmd/worker's auction-close pass, or a Buy It Now purchase, has
-  // processed this listing: "sold" (won via bidding), "no_bids", or
-  // "bought_now" (purchased outright, skipping bidding). Undefined until
-  // then, including for the entire lifetime of a still-active auction.
-  outcome?: "sold" | "no_bids" | "bought_now";
+  // Mirrors apps/api/internal/listing.Listing exactly (migration 0049) —
+  // gates internal/offer's real offer flow. allowOffers is only ever
+  // meaningful alongside a real Buy It Now price (this listing's own
+  // priceCents for a fixed listing, buyItNowPriceCents for an auction).
+  // minOfferCents undefined with allowOffers true means the seller didn't
+  // set a floor — any positive amount below the BIN price is a valid offer.
+  allowOffers: boolean;
+  minOfferCents?: number;
+
+  // Set once cmd/worker's auction-close pass, a Buy It Now purchase, or a
+  // seller ending an auction early (internal/auction.EndListing) has
+  // processed this listing: "sold" (won via bidding, including a seller
+  // ending early and honoring the high bid), "no_bids", "bought_now"
+  // (purchased outright, skipping bidding), or "cancelled" (the seller
+  // voided every bid instead of selling — see EndListingAction above).
+  // Undefined until then, including for the entire lifetime of a still-
+  // active auction.
+  outcome?: "sold" | "no_bids" | "bought_now" | "cancelled";
 
   // When the auction actually closed — distinct from endsAt (the originally
   // scheduled end time), since a Buy It Now purchase closes an auction
@@ -123,6 +156,14 @@ export interface Listing {
   // fixed listing has no auction row to record this on.
   buyerId?: string;
   soldAt?: string;
+
+  // Only set when a fixed-format listing sold for something other than its
+  // own priceCents — currently only an accepted offer (Make an Offer ->
+  // seller accepts), which reserves the listing for that buyer at the
+  // negotiated amount instead of the asking price. Undefined means "sold at
+  // priceCents" (a plain Buy It Now purchase) or "not sold yet" — always
+  // prefer this over priceCents once buyerId is set.
+  soldPriceCents?: number;
 
   // Set only when a real Stripe charge actually captured for this
   // purchase (internal/auction.HandleBuyNow). Undefined for a purchase
@@ -214,6 +255,45 @@ export function hasBidEnded(bid: MyBid): boolean {
   );
 }
 
+// Mirrors apps/api/internal/offer.Status exactly. Defined here (not
+// imported from Offer in lib/api.ts) so both lib/api.ts and any component
+// can use the literal union without api.ts and types.ts importing each
+// other in a cycle — api.ts already imports plain types from this file.
+export type OfferStatus = "pending" | "accepted" | "declined" | "withdrawn" | "expired";
+
+export function formatOfferStatus(status: OfferStatus): string {
+  switch (status) {
+    case "accepted":
+      return "Accepted";
+    case "declined":
+      return "Declined";
+    case "withdrawn":
+      return "Withdrawn";
+    case "expired":
+      return "Expired";
+    default:
+      return "Pending";
+  }
+}
+
+// Shared badge coloring for a resolved (non-pending) offer — accepted
+// gets the site's own gold (matches the seller-tier/brand accent used
+// everywhere else a "this succeeded" moment is celebrated), everything
+// else (declined/withdrawn/expired) reads as a neutral "this didn't go
+// anywhere," never as an error/urgent color: none of those outcomes are a
+// fault on the viewer's part worth alarming them over. Pending gets its
+// own color since it's still awaiting action.
+export function offerStatusBadgeClass(status: OfferStatus): string {
+  switch (status) {
+    case "accepted":
+      return "bg-brand-gold/10 text-brand-gold";
+    case "pending":
+      return "bg-sky-500/10 text-sky-600";
+    default:
+      return "bg-gray-100 text-gray-500";
+  }
+}
+
 const CARD_BRAND_LABELS: Record<string, string> = {
   visa: "Visa",
   mastercard: "Mastercard",
@@ -233,10 +313,14 @@ export function formatCardBrand(brand: string): string {
 }
 
 // The price actually paid for a purchased listing — its fixed price for a
-// Buy It Now purchase, or the auction's final current price for a win
-// (whether by bidding or by Buy It Now on an auction-format listing).
+// Buy It Now purchase (or soldPriceCents instead, when an accepted offer
+// sold it for less than that asking price), or the auction's final current
+// price for a win (whether by bidding, by Buy It Now, or by an accepted
+// offer on an auction-format listing).
 export function purchasePriceCents(listing: Listing): number {
-  return listing.format === "fixed" ? listing.priceCents ?? 0 : listing.currentPriceCents ?? 0;
+  return listing.format === "fixed"
+    ? listing.soldPriceCents ?? listing.priceCents ?? 0
+    : listing.currentPriceCents ?? 0;
 }
 
 // When a purchased listing was actually bought — soldAt for a fixed-format
@@ -254,8 +338,28 @@ export function formatPrice(cents: number): string {
 }
 
 // Mirrors apps/api/internal/shipping.TrackedEnvelopeCents exactly — the
-// flat buyer-facing price for the tracked_envelope preset.
-export const TRACKED_ENVELOPE_CENTS = 151;
+// flat buyer-facing price for the tracked_envelope preset. $1.56 is a
+// real, live-verified Pitney Bowes USPS First-Class Mail (NMLETTER)
+// postage cost, not an estimate — see that constant's own doc comment.
+export const TRACKED_ENVELOPE_CENTS = 156;
+
+// Mirrors apps/api/internal/shipping.SignatureRequestThresholdCents exactly
+// — once a listing's starting bid or Buy It Now price crosses this, the
+// Sell wizard/Edit form lock "Signature Required" on. Purely a UI
+// heuristic here (the real decision is always server-derived at
+// Create/Update, never trusted from the client) so the checkbox reflects
+// the real rule the moment a seller types a price, without waiting on a
+// round trip.
+export const SIGNATURE_REQUEST_THRESHOLD_CENTS = 25000;
+
+// A rough, non-binding approximation of what signature confirmation adds
+// to a real Shippo label — $4.15 is the current (2026) USPS Signature
+// Confirmation rate through Shippo. Same "representative figure, not a
+// live quote" shape as ShippingPresetPicker's other approxCents values;
+// the real, live-quoted number (already inclusive of this surcharge once
+// requestSignature is true) is what actually shows up as the listing's own
+// estimatedShippingCents once it's live.
+export const SIGNATURE_SURCHARGE_APPROX_CENTS = 415;
 
 // The one "how does this ship, and what does it cost" line, shared by
 // every place a listing renders shipping info (ListingCard, ListingRow,
@@ -281,7 +385,7 @@ export function shippingDisplayText(listing: Listing): string {
 
 // The listing detail page's fuller "what you'll actually get" line —
 // cost and packaging shown as two distinct parts (e.g. "Free Shipping"
-// + "Bubble Mailer", "$1.51" + "Tracked Envelope") rather than
+// + "Bubble Mailer", "$1.56" + "Tracked Envelope") rather than
 // shippingDisplayText's single compact sentence used on cards/rows/
 // checkout, since a buyer deciding whether to bid/buy benefits from
 // knowing the actual mechanism, not just the price.
@@ -295,6 +399,52 @@ const SHIPPING_METHOD_LABELS: Record<ShippingPreset, string> = {
 
 export function shippingMethodLabel(listing: Listing): string {
   return SHIPPING_METHOD_LABELS[listing.shippingPreset];
+}
+
+// Shorter than SHIPPING_METHOD_LABELS' own strings (specifically
+// shippo_ground_advantage's "Ground Advantage (Tracked Package)") — for
+// ListingCard's compact price-block badge, which sits in a ~250px-wide
+// column next to a cost figure and an icon, not the detail page's full-width
+// line.
+const SHIPPING_METHOD_LABELS_COMPACT: Record<ShippingPreset, string> = {
+  free_envelope: "Envelope",
+  free_bubble_mailer: "Bubble Mailer",
+  free_box: "Box",
+  tracked_envelope: "Tracked Envelope",
+  shippo_ground_advantage: "Tracked Package",
+};
+
+export interface ShippingBadge {
+  // "+$1.56", "Free", "~$4.20", or "" when shippo_ground_advantage has no
+  // estimate yet (no real buyer address at listing time) — render without a
+  // cost segment in that case rather than a misleading "$0".
+  costLabel: string;
+  methodLabel: string;
+}
+
+// ListingCard's compact "cost · [icon] container name" badge (e.g. "+$1.56 ·
+// Tracked Envelope") — splits shippingDisplayText's single sentence into
+// parts so the card can put a container icon between them.
+export function shippingBadge(listing: Listing): ShippingBadge {
+  const methodLabel = SHIPPING_METHOD_LABELS_COMPACT[listing.shippingPreset];
+  switch (listing.shippingPreset) {
+    case "free_envelope":
+    case "free_bubble_mailer":
+    case "free_box":
+      return { costLabel: "Free", methodLabel };
+    case "tracked_envelope":
+      return { costLabel: `+${formatPrice(TRACKED_ENVELOPE_CENTS)}`, methodLabel };
+    case "shippo_ground_advantage":
+      return {
+        costLabel:
+          listing.estimatedShippingCents != null
+            ? `~${formatPrice(listing.estimatedShippingCents)}`
+            : "",
+        methodLabel,
+      };
+    default:
+      return { costLabel: "", methodLabel: "Calculated at checkout" };
+  }
 }
 
 export function shippingCostLabel(listing: Listing): string {
@@ -320,8 +470,8 @@ export function shippingCostLabel(listing: Listing): string {
 // bragging about (see app/tiers/page.tsx).
 export function formatSellerTier(tier: Listing["sellerTier"]): string {
   switch (tier) {
-    case "haus_trust":
-      return "Haus Trusted Seller";
+    case "hous_trust":
+      return "Hous Trusted Seller";
     case "platinum":
       return "Platinum Seller";
     case "gold":
@@ -341,8 +491,8 @@ export function formatSellerTier(tier: Listing["sellerTier"]): string {
 // nothing.
 export function sellerTierIconSrc(tier: Listing["sellerTier"]): string | null {
   switch (tier) {
-    case "haus_trust":
-      return "/tiers/haus.png";
+    case "hous_trust":
+      return "/tiers/hous.png";
     case "gold":
       return "/tiers/gold.png";
     case "silver":
@@ -355,13 +505,13 @@ export function sellerTierIconSrc(tier: Listing["sellerTier"]): string | null {
 }
 
 // Each tier's identity color, matching its card icon's metal tone (bronze
-// copper, silver, gold, platinum's pale steel, Haus Trust's ice blue) —
+// copper, silver, gold, platinum's pale steel, Hous Trust's ice blue) —
 // tuned for use on a dark navy background (TopBar/Hero), not for light
 // surfaces like SellerCard's white background, where the plain gray badge
 // text stays as-is.
 export function sellerTierAccentColorClass(tier: Listing["sellerTier"]): string {
   switch (tier) {
-    case "haus_trust":
+    case "hous_trust":
       return "text-[#8ec5ff]";
     case "platinum":
       return "text-[#e5e4e2]";
@@ -389,7 +539,7 @@ export const PROFILE_STICKER_OPTIONS: { kind: string; label: string; src: string
   { kind: "bronze", label: "Bronze Tier", src: "/tiers/bronze.png" },
   { kind: "silver", label: "Silver Tier", src: "/tiers/silver.png" },
   { kind: "gold", label: "Gold Tier", src: "/tiers/gold.png" },
-  { kind: "haus_trust", label: "Haus Trust", src: "/tiers/haus.png" },
+  { kind: "hous_trust", label: "Hous Trust", src: "/tiers/hous.png" },
 ];
 
 export function profileStickerSrc(kind: string): string | undefined {
@@ -424,14 +574,14 @@ export const WIDGET_CATALOG: { type: string; label: string; description: string 
 export const MAX_WIDGETS = 6;
 
 // Commission rate for a seller trust tier — mirrors
-// apps/api/internal/seller.tierPct exactly (design doc v2 §3.1). Haus
+// apps/api/internal/seller.tierPct exactly (design doc v2 §3.1). Hous
 // Trust deliberately has no fixed rate to show here — it's negotiated per
-// seller at application approval (apps/api/internal/seller/haustrust.go),
+// seller at application approval (apps/api/internal/seller/houstrust.go),
 // so "Custom" is the honest answer, not a specific number this function
-// could get wrong the moment two Haus Trust sellers have different rates.
+// could get wrong the moment two Hous Trust sellers have different rates.
 export function sellerTierRate(tier: Listing["sellerTier"]): string {
   switch (tier) {
-    case "haus_trust":
+    case "hous_trust":
       return "Custom";
     case "platinum":
       return "5.50%";

@@ -154,10 +154,10 @@ const highValueThresholdCents = 25000
 // separate timer tick once delivery is confirmed), setting claim_deadline
 // to now + 3 days (orders under $250) or + 7 days ($250 and up).
 //
-// Haus Trust sellers skip the claim window entirely — released the instant
+// Hous Trust sellers skip the claim window entirely — released the instant
 // the carrier scans it delivered, by explicit product decision. **Gold does
-// not get this** (an earlier version of this code gave both Gold and Haus
-// Trust instant release; that was scaled back to Haus Trust only). Tier
+// not get this** (an earlier version of this code gave both Gold and Hous
+// Trust instant release; that was scaled back to Hous Trust only). Tier
 // promotion/demotion isn't built yet (internal/seller.CurrentTier always
 // returns 'new'), so this branch can't actually fire for anyone until that
 // exists — it's real, correct code waiting on that dependency, not dead
@@ -182,7 +182,7 @@ func MarkDelivered(ctx context.Context, pool *pgxpool.Pool, paymentClient *payme
 	if err != nil {
 		return fmt.Errorf("read seller tier: %w", err)
 	}
-	if tier == seller.TierHausTrust {
+	if tier == seller.TierHousTrust {
 		if err := Transition(ctx, pool, orderID, StateDelivered, StateReleased); err != nil {
 			return err
 		}

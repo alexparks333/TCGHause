@@ -111,7 +111,7 @@ func TestTierLadderFixture(t *testing.T) {
 		{"Bronze", 0.0650, 713, 9787},
 		{"Silver", 0.0625, 686, 9814},
 		{"Gold", 0.0600, 660, 9840},
-		{"HausTrust", 0.0550, 608, 9892},
+		{"HousTrust", 0.0550, 608, 9892},
 	}
 
 	for _, c := range cases {

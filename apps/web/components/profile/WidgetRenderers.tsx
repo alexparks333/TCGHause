@@ -22,10 +22,15 @@ export function ListingsWidget({
   listings,
   watchedIds,
   isLoggedIn,
+  currentUserId,
 }: {
   listings: Listing[];
   watchedIds: Set<string>;
   isLoggedIn: boolean;
+  // See ListingCard's own doc comment — without this, a seller viewing
+  // their own public profile would see Buy It Now/Make an Offer on their
+  // own listings here.
+  currentUserId?: string;
 }) {
   if (listings.length === 0) {
     // Same header ListingSection itself would render — without it, an
@@ -39,7 +44,15 @@ export function ListingsWidget({
       </div>
     );
   }
-  return <ListingSection title="Listings" items={listings} watchedIds={watchedIds} isLoggedIn={isLoggedIn} />;
+  return (
+    <ListingSection
+      title="Listings"
+      items={listings}
+      watchedIds={watchedIds}
+      isLoggedIn={isLoggedIn}
+      currentUserId={currentUserId}
+    />
+  );
 }
 
 // The card image's own max width — kept well inside the ~413px grid

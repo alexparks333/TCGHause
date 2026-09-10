@@ -5,6 +5,7 @@ import type { ChangeEvent } from "react";
 export default function MoneyInput({
   label,
   hint,
+  error,
   value,
   onChange,
   placeholder = "0.00",
@@ -12,6 +13,11 @@ export default function MoneyInput({
 }: {
   label: string;
   hint?: string;
+  // Replaces `hint` with a red validation message and turns the border/
+  // focus ring red to match — e.g. Step3Price's "minimum offer can't
+  // exceed the Buy It Now price" check. Only ever a live client-side
+  // nicety; the actual enforcement is always the server's.
+  error?: string;
   value: string; // dollars-as-string, e.g. "50.90" — same shape WizardData already stores
   onChange: (dollars: string) => void;
   placeholder?: string;
@@ -48,10 +54,19 @@ export default function MoneyInput({
           value={value}
           onChange={handleChange}
           placeholder={placeholder}
-          className="w-full rounded-2xl border border-gray-300 bg-white py-3.5 pl-8 pr-4 text-xl font-bold text-gray-900 shadow-sm outline-none transition-colors placeholder:font-normal placeholder:text-gray-300 focus:border-brand-navy focus:ring-2 focus:ring-brand-navy/20"
+          aria-invalid={Boolean(error)}
+          className={`w-full rounded-2xl border bg-white py-3.5 pl-8 pr-4 text-xl font-bold text-gray-900 shadow-sm outline-none transition-colors placeholder:font-normal placeholder:text-gray-300 focus:ring-2 ${
+            error
+              ? "border-brand-urgent focus:border-brand-urgent focus:ring-brand-urgent/20"
+              : "border-gray-300 focus:border-brand-navy focus:ring-brand-navy/20"
+          }`}
         />
       </span>
-      {hint && <span className="text-xs font-normal text-gray-400">{hint}</span>}
+      {error ? (
+        <span className="text-xs font-medium text-brand-urgent">{error}</span>
+      ) : hint ? (
+        <span className="text-xs font-normal text-gray-400">{hint}</span>
+      ) : null}
     </label>
   );
 }

@@ -1,9 +1,21 @@
-# Shipping Research — Labels, Tracking, Cost, and Packaging
+!# Shipping Research — Labels, Tracking, Cost, and Packaging
 
-**Status:** research only — no shipping code exists in the repo yet. This document is
-what `internal/shipping` (CLAUDE.md §2, §6.11) should be built from once shipping work
-starts. Scope: domestic US only, individual sellers shipping 1–10 raw cards or a single
-graded slab, matching the design doc's two-tier PWE (untracked) / tracked model.
+**Status: this research is done, and the real implementation has since diverged from
+its top-line recommendation in one way worth flagging up front.** `internal/shipping`
+is real and live (CLAUDE.md §6.18) — but §1's EasyPost recommendation didn't survive
+contact with EasyPost's actual account-verification wall, so **Shippo**, this
+document's own credible fallback, is what's actually wired up for the tracked-package
+tier. Separately, this document's PWE/tracked split turned into a real third piece not
+fully scoped here: a **Pitney Bowes** integration for the `tracked_envelope` preset —
+USPS First-Class Mail with an Intelligent Mail Barcode (IMb), landing on a real,
+verified flat price of **$1.56** (§3's own estimate range, ~$1.51, was close but not
+exact — see CLAUDE.md §6.18 for the live-verified breakdown and the Pitney-Bowes-
+specific integration gotchas, which have no equivalent in this document's original
+Shippo/EasyPost-only research). Everything else below is still the real research this
+was built from — carrier mechanics, packaging standards, and the escrow-timer
+reasoning all held up. Scope: domestic US only, individual sellers shipping 1–10 raw
+cards or a single graded slab, matching the design doc's two-tier PWE (untracked) /
+tracked model.
 
 **Dating:** all pricing below is dated **August 2026**. Carrier rates change on a
 predictable annual/semi-annual cadence — re-verify before finalizing any cost model in
@@ -174,7 +186,7 @@ Real-world precedent for hardening the tracked-release path:
    machine, not a direct balance mutation — per CLAUDE.md §5.2.
 2. Require signature confirmation above a dollar threshold (design doc open question
    #1) — mirror eBay's $750 line, or lower given a lower average order value here —
-   specifically for graded slabs and high-value raw cards.
+   specifically for graded slabs and high-value cards.
 3. Add a fallback path for missing scans: if a tracked shipment shows no delivery scan
    after an outer bound (e.g. 10–14 days of tracking silence, or an explicit
    exception/return-to-sender event), route to manual admin review rather than
@@ -253,7 +265,7 @@ UPS Ground has no sub-1lb pricing band — the lightest tier starts at 1 lb:
 **Recommendation**: default the tracked tier to **USPS Ground Advantage**, not UPS,
 for essentially all listings in this weight/value class. Still worth rate-shopping
 (both aggregators quote multi-carrier automatically) for heavier multi-card lots or
-larger boxes, but shouldn't be the assumed default.
+larger boxes, but shouldn't be the assume default.
 
 ### Aggregator markup
 

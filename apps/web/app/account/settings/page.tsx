@@ -226,7 +226,7 @@ export default async function AccountSettingsPage() {
             <li>15 completed orders → Bronze, 6.50% + $0.30</li>
             <li>50 completed orders → Silver, 6.25% + $0.30</li>
             <li>150 completed orders → Gold, 6.00% + $0.30</li>
-            <li>500 completed orders → Haus Trust, 5.50% + $0.30</li>
+            <li>500 completed orders → Hous Trust, 5.50% + $0.30</li>
           </ul>
           <a href="/tiers" className="mt-3 inline-block text-xs font-medium text-brand-navy hover:underline">
             See the full fee ladder

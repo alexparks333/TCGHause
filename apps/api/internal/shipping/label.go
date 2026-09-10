@@ -15,6 +15,20 @@ import (
 	"auctionhous-tcg/api/internal/user"
 )
 
+type buyLabelRequest struct {
+	// FromAddressOverride lets the seller ship this one order from a
+	// different return address than their saved Account Settings address,
+	// without ever overwriting that saved default — the frontend always
+	// prefills its edit form from GET /me/address first (CLAUDE.md's usual
+	// "account settings is the starting point" pattern), then sends
+	// whatever the seller actually edited here. Nil (the common case, and
+	// always nil for the very first label bought on an order) means "use
+	// the account address," same as before this field existed. Never
+	// written to the addresses table — this is a one-time substitution for
+	// a single label purchase, not a profile edit.
+	FromAddressOverride *address.Address `json:"fromAddressOverride"`
+}
+
 type buyLabelResponse struct {
 	TrackingNumber string `json:"trackingNumber"`
 	Carrier        string `json:"carrier"`
@@ -38,6 +52,14 @@ type buyLabelResponse struct {
 // reach the Pitney Bowes branch below, a shippo_ground_advantage order
 // only the Shippo branch — there's no path for a seller to buy one label
 // type and have it recorded as the other.
+//
+// Only callable while the order is still awaiting_ship — this is both the
+// first-purchase path AND PrintLabelButton's "Change Shipping Label"
+// re-purchase path, and a real bug once had the frontend offering "Change
+// Shipping Label" after the item had already shipped, which would buy and
+// record a second label (different tracking number, real vendor charge)
+// for a package that had already gone out under the first one. Once
+// MarkShipped has run there is nothing left to change, so this 409s.
 func HandleBuyLabel(pool *pgxpool.Pool, shippoClient *Client, pbClient *PitneyBowesClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		callerID, ok := platform.UserIDFromContext(r.Context())
@@ -59,6 +81,16 @@ func HandleBuyLabel(pool *pgxpool.Pool, shippoClient *Client, pbClient *PitneyBo
 			http.Error(w, "only the seller can buy a shipping label for this order", http.StatusForbidden)
 			return
 		}
+		if o.State != order.StateAwaitingShip {
+			http.Error(w, "a shipping label can only be bought or changed before the item ships", http.StatusConflict)
+			return
+		}
+
+		var req buyLabelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
 
 		preset := PresetTrackedEnvelope
 		if o.ShippingPreset != nil && Preset(*o.ShippingPreset).Valid() {
@@ -75,14 +107,24 @@ func HandleBuyLabel(pool *pgxpool.Pool, shippoClient *Client, pbClient *PitneyBo
 			return
 		}
 
-		fromAddr, err := address.Get(r.Context(), pool, o.SellerID)
-		if err != nil {
-			if errors.Is(err, address.ErrNotFound) {
-				http.Error(w, "add a return address in Account Settings before buying a label", http.StatusBadRequest)
+		var fromAddr *address.Address
+		if req.FromAddressOverride != nil {
+			normalized := address.Normalize(*req.FromAddressOverride)
+			if err := address.Validate(normalized); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			fromAddr = &normalized
+		} else {
+			fromAddr, err = address.Get(r.Context(), pool, o.SellerID)
+			if err != nil {
+				if errors.Is(err, address.ErrNotFound) {
+					http.Error(w, "add a return address in Account Settings before buying a label", http.StatusBadRequest)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		toAddr, err := address.Get(r.Context(), pool, o.BuyerID)
 		if err != nil {
@@ -109,6 +151,13 @@ func HandleBuyLabel(pool *pgxpool.Pool, shippoClient *Client, pbClient *PitneyBo
 			return
 		}
 
+		// TODO(before flipping SHIPPO_API_TOKEN to a live key): this always buys
+		// a brand-new label/transaction and never voids the one it's replacing
+		// (o.ProviderShipmentID has the id a Shippo refund call would need).
+		// Harmless today since the token is shippo_test_..., but on a live key
+		// every "Change Shipping Label" click becomes a second real charge with
+		// no refund of the first. Pitney Bowes specifically can never be voided
+		// at all, refund or no — see recordedCostCents below.
 		var label *Label
 		if mechanism == MechanismLetter {
 			label, err = pbClient.BuyLabel(r.Context(), fromAddr, toAddr, fromUser.Email, toUser.Email)
@@ -120,7 +169,26 @@ func HandleBuyLabel(pool *pgxpool.Pool, shippoClient *Client, pbClient *PitneyBo
 			return
 		}
 
-		if err := order.SetLabel(r.Context(), pool, o.ID, callerID, label.Carrier, label.TrackingNumber, label.ProviderShipmentID, label.LabelURL, label.CostCents); err != nil {
+		// recordedCostCents is what actually gets persisted and shown on the
+		// receipt — for Pitney Bowes (MechanismLetter), that's the running
+		// total of every purchase ever made on this order, not just this
+		// latest one. Pitney Bowes' IMb labels are confirmed non-refundable
+		// (their own docs: "You cannot request refunds for FCM letters and
+		// flats") — mechanism is fixed for the life of an order (set once at
+		// order creation, never changes between purchases on it), so if
+		// o.LabelCostCents is already set here, every cent of it was already
+		// spent on a real, un-refundable earlier label. Silently overwriting
+		// it with just the new purchase's cost would make that earlier real
+		// money vanish from the receipt entirely — the exact accounting gap
+		// a real "Change Shipping Label" click surfaced live. Shippo/package
+		// labels are left overwriting for now (the TODO above already covers
+		// that gap; scoped here to the mechanism that can never be voided).
+		recordedCostCents := label.CostCents
+		if mechanism == MechanismLetter && o.LabelCostCents != nil && *o.LabelCostCents > 0 {
+			recordedCostCents += *o.LabelCostCents
+		}
+
+		if err := order.SetLabel(r.Context(), pool, o.ID, callerID, label.Carrier, label.TrackingNumber, label.ProviderShipmentID, label.LabelURL, recordedCostCents); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -131,7 +199,7 @@ func HandleBuyLabel(pool *pgxpool.Pool, shippoClient *Client, pbClient *PitneyBo
 			Carrier:        label.Carrier,
 			Service:        label.Service,
 			LabelURL:       label.LabelURL,
-			CostCents:      label.CostCents,
+			CostCents:      recordedCostCents,
 		})
 	}
 }

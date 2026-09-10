@@ -44,7 +44,7 @@ var validStickerKinds = map[string]bool{
 	"bronze":     true,
 	"silver":     true,
 	"gold":       true,
-	"haus_trust": true,
+	"hous_trust": true,
 }
 
 const maxStickers = 12

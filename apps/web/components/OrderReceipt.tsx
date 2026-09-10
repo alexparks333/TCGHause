@@ -11,7 +11,7 @@ const TIER_LABELS: Record<string, string> = {
   silver: "Silver",
   gold: "Gold",
   platinum: "Platinum",
-  haus_trust: "Haus Trust",
+  hous_trust: "Hous Trust",
 };
 
 function formatPct(pct: number): string {

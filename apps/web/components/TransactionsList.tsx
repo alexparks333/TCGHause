@@ -18,6 +18,7 @@ import type { OrderState, OrderSummary } from "@/lib/api";
 import { formatPrice } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/format";
 import TransactionStepper from "@/components/TransactionStepper";
+import ModeButton from "@/components/ModeButton";
 import PrintLabelButton from "@/components/PrintLabelButton";
 
 type Mode = "purchased" | "sold";
@@ -169,10 +170,16 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
                     <StatusIcon size={14} />
                     {status.label}
                   </p>
-                  <p className="text-xs text-gray-400">{formatRelativeTime(order.createdAt)}</p>
+                  {/* Date.now()-based text — see ThreadListItem's matching
+                      comment for why this needs suppressHydrationWarning,
+                      not a fix elsewhere. */}
+                  <p className="text-xs text-gray-400" suppressHydrationWarning>
+                    {formatRelativeTime(order.createdAt)}
+                  </p>
                   {order.viewerIsSeller && order.labelUrl && (
                     <PrintLabelButton
                       listingId={order.listingId}
+                      state={order.state}
                       className={
                         order.state === "awaiting_ship"
                           ? undefined
@@ -201,11 +208,18 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
               {!stepperHidden && (
                 <div className="rounded-b-xl border-t border-brand-border bg-brand-surface px-4 py-4 sm:px-6">
                   <TransactionStepper
+                    listingId={order.listingId}
                     sellerUsername={order.sellerUsername}
                     buyerUsername={order.buyerUsername}
                     viewerIsSeller={order.viewerIsSeller}
                     state={order.state}
+                    createdAt={order.createdAt}
                     actionHref={href}
+                    onAdvanced={(updated) =>
+                      setOrders((prev) =>
+                        prev.map((o) => (o.id === order.id ? { ...o, ...updated } : o)),
+                      )
+                    }
                   />
                 </div>
               )}
@@ -214,34 +228,6 @@ export default function TransactionsList({ orders: initialOrders }: { orders: Or
         })
       )}
     </div>
-  );
-}
-
-function ModeButton({
-  icon: Icon,
-  label,
-  count,
-  active,
-  onClick,
-}: {
-  icon: LucideIcon;
-  label: string;
-  count: number;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium transition-colors ${
-        active ? "bg-brand-navy text-white" : "bg-white text-gray-600 hover:bg-brand-surface"
-      }`}
-    >
-      <Icon size={14} />
-      {label}
-      <span className={active ? "text-white/70" : "text-gray-400"}>{count}</span>
-    </button>
   );
 }
 

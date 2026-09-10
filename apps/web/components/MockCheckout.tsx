@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
-import { AlertTriangle, ArrowLeft, Check, CreditCard, Landmark } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CreditCard, Landmark, Mail, Package } from "lucide-react";
 import {
   buyNow,
   createCheckoutIntent,
@@ -18,8 +18,20 @@ import {
 } from "@/lib/api";
 import { AddCardForm } from "@/components/SavedCardsManager";
 import { AddBankForm } from "@/components/SavedBanksManager";
+import ShippingAddressGate from "@/components/ShippingAddressGate";
 import { getStripe, isStripeConfigured } from "@/lib/stripe";
-import { formatPrice } from "@/lib/types";
+import { formatPrice, type ShippingPreset } from "@/lib/types";
+
+// Envelope for the two letter-mechanism presets (internal/shipping's own
+// Mechanism split, CLAUDE.md §6.18), a box for everything that actually
+// ships as a package — a real physical distinction, not just decoration.
+const SHIPPING_METHOD_ICONS: Record<ShippingPreset, typeof Mail> = {
+  free_envelope: Mail,
+  tracked_envelope: Mail,
+  free_bubble_mailer: Package,
+  free_box: Package,
+  shippo_ground_advantage: Package,
+};
 
 // The actual purchase happens right here — never on the "Buy It Now" click
 // that got the buyer to this page. That's what makes two buyers safely
@@ -35,12 +47,64 @@ import { formatPrice } from "@/lib/types";
 export default function MockCheckout({
   listingId,
   priceCents,
+  shippingPreset,
+  shippingMethod,
+  shippingCostLabel,
 }: {
   listingId: string;
   priceCents: number;
+  // Shown right under "Item price," before the buyer has even confirmed
+  // an address or a real checkout intent exists — a real seller/buyer
+  // asked for this specifically: knowing the shipping method and its cost
+  // up front, not only after clicking through to the payment step where
+  // the real Subtotal/Shipping/Tax breakdown (OrderBreakdown, below) first
+  // becomes available. Computed from the listing itself (shippingMethodLabel/
+  // shippingCostLabel, lib/types.ts) — the same numbers already shown on the
+  // listing detail page, so this is a preview, not a second source of truth.
+  // shippingPreset is only for picking SHIPPING_METHOD_ICONS' icon.
+  shippingPreset: ShippingPreset;
+  shippingMethod: string;
+  shippingCostLabel: string;
 }) {
+  const ShippingMethodIcon = SHIPPING_METHOD_ICONS[shippingPreset];
+
+  // One breakdown block, not two. Originally "Item price"/"Shipping" lived
+  // here as a preview, and a second, separate Subtotal/Shipping/Tax/Order
+  // total block appeared further down once StripeCheckout had a real
+  // intent — a real ask was to merge these into one fluid block instead:
+  // "Item price" relabels itself to "Subtotal" and a "Sales tax" + "Order
+  // total" row animate in, right in place, rather than the same numbers
+  // appearing twice on the page. That means `intent` (which used to live
+  // entirely inside StripeCheckout) has to be mirrored up here — StripeCheckout
+  // still owns fetching it, but reports every change via onIntentChange.
+  const [intent, setIntent] = useState<CheckoutIntent | null>(null);
+  // Rail switches transiently null the intent while StripeCheckout fetches
+  // a fresh one (its own effect) — without this, toggling "Pay by bank
+  // instead" would collapse the tax/total rows shut and reopen them a
+  // moment later, which reads as a glitch, not "fluid." lastIntentRef keeps
+  // the last real values on screen through that gap; hasLoadedOnce (a real
+  // state, unlike the ref, so it can drive the animation) latches true the
+  // first time an intent ever arrives and never resets, so the rows never
+  // collapse again once they've appeared.
+  const lastIntentRef = useRef<CheckoutIntent | null>(null);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  function handleIntentChange(next: CheckoutIntent | null) {
+    setIntent(next);
+    if (next) {
+      lastIntentRef.current = next;
+      setHasLoadedOnce(true);
+    }
+  }
+  const displayIntent = intent ?? lastIntentRef.current;
+
+  // Matches the listing detail page's own price/buy box exactly
+  // (app/listing/[id]/page.tsx's "Buy it now"/AuctionPriceBox container:
+  // rounded-xl, p-5, no shadow) — this used to be rounded-2xl/p-8/
+  // shadow-sm, a visibly different, more heavily padded box for what's
+  // meant to read as the same info box carried over from the listing
+  // page into checkout.
   return (
-    <div className="rounded-2xl border border-brand-border bg-white p-8 shadow-sm">
+    <div className="rounded-xl border border-brand-border bg-white p-5">
       {/* This card sits in a `sticky top-6` column (app/checkout/[id]/page.tsx)
           — on a long listing it stays pinned in view while the page-level
           "Back to listing" link above the two-column grid scrolls out of
@@ -53,16 +117,73 @@ export default function MockCheckout({
         <ArrowLeft size={15} /> Back to listing
       </Link>
       <h1 className="text-xl font-bold text-gray-900">Complete your purchase</h1>
+      {/* "Item price" before a real checkout intent exists (the only number
+          known that early — see the address-confirmation gap this filled
+          in, ShippingAddressGate), relabeling itself to "Subtotal" the
+          instant one does — the intent's own subtotalCents, not a second
+          guess at the same number. Calling this "Total" was the original
+          bug: a buyer saw "Total $66.66" up top and "Pay $68.22" at the
+          bottom with no visible reconciliation — the gap was real shipping
+          cost, not a hidden fee, but nothing on the page said so. */}
       <div className="mt-3 flex items-center justify-between border-t border-brand-border pt-3 text-sm">
-        <span className="text-gray-500">Total</span>
-        <span className="text-lg font-bold text-gray-900">{formatPrice(priceCents)}</span>
+        <span className="text-gray-500">{displayIntent ? "Subtotal" : "Item price"}</span>
+        <span className="text-lg font-bold text-gray-900">
+          {formatPrice(displayIntent ? displayIntent.subtotalCents : priceCents)}
+        </span>
+      </div>
+      {/* shippingCostLabel (the pre-intent preview) already reads as a full
+          phrase ("+$1.56 shipping", "Free Shipping") — pairing it with an
+          explicit "Shipping:" prefix would say the word twice, so the
+          method name is the only label. Once a real intent exists, the
+          value switches to the authoritative intent.shippingCents (same
+          bare-number style the tax/total rows below use), not the preview
+          string. */}
+      <div className="mt-1.5 flex items-center justify-between text-sm">
+        <span className="flex items-center gap-1 text-gray-400">
+          <ShippingMethodIcon size={14} /> {shippingMethod}
+        </span>
+        <span className="text-gray-500">
+          {displayIntent
+            ? displayIntent.shippingCents > 0
+              ? formatPrice(displayIntent.shippingCents)
+              : "Free"
+            : shippingCostLabel}
+        </span>
       </div>
 
-      {isStripeConfigured() ? (
-        <StripeCheckout listingId={listingId} />
-      ) : (
-        <PlainMockCheckout listingId={listingId} />
-      )}
+      {/* The grid-rows 0fr->1fr trick animates height smoothly without
+          knowing the content's height up front (a plain max-height
+          transition would need a guessed cap) — this is what makes the
+          address-confirmation area below visibly slide down as tax/total
+          appear, rather than jumping. hasLoadedOnce (not `intent` itself)
+          drives it, so it only ever opens once, never re-collapses on a
+          rail switch. */}
+      <div
+        className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+          hasLoadedOnce ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="mt-1.5 flex items-center justify-between text-sm">
+            <span className="text-gray-500">Sales tax</span>
+            <span className="text-gray-500">{formatPrice(displayIntent?.taxCents ?? 0)}</span>
+          </div>
+          <div className="mt-2 flex items-center justify-between border-t border-brand-border pt-2 text-sm">
+            <span className="font-semibold text-gray-900">Order total</span>
+            <span className="text-lg font-bold text-gray-900">
+              {formatPrice(displayIntent?.amountCents ?? 0)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <ShippingAddressGate>
+        {isStripeConfigured() ? (
+          <StripeCheckout listingId={listingId} onIntentChange={handleIntentChange} />
+        ) : (
+          <PlainMockCheckout listingId={listingId} />
+        )}
+      </ShippingAddressGate>
     </div>
   );
 }
@@ -218,13 +339,27 @@ async function confirmAndBuy(
 //      brand-new, not-saved card needs to type straight into). Re-fetched
 //      whenever rail or the selection changes, same lazy-per-selection
 //      pattern the rail switch already used.
-function StripeCheckout({ listingId }: { listingId: string }) {
+function StripeCheckout({
+  listingId,
+  onIntentChange,
+}: {
+  listingId: string;
+  // Mirrors this component's own intent state up to MockCheckout, which
+  // merges it into the single Subtotal/Shipping/Tax/Order total block at
+  // the top of the page instead of rendering a second copy of the same
+  // numbers down here (see MockCheckout's own comment on why).
+  onIntentChange: (intent: CheckoutIntent | null) => void;
+}) {
   const router = useRouter();
   const [rail, setRail] = useState<"card" | "ach">("card");
   const [methods, setMethods] = useState<(SavedCard | SavedBank)[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [adding, setAdding] = useState(false);
-  const [intent, setIntent] = useState<CheckoutIntent | null>(null);
+  const [intent, setIntentState] = useState<CheckoutIntent | null>(null);
+  const setIntent = (next: CheckoutIntent | null) => {
+    setIntentState(next);
+    onIntentChange(next);
+  };
   const [loadError, setLoadError] = useState("");
   const [chargeError, setChargeError] = useState("");
   const [finishing, setFinishing] = useState(false);
@@ -353,7 +488,12 @@ function StripeCheckout({ listingId }: { listingId: string }) {
       )}
 
       {adding && rail === "card" && (
-        <NewCardForm listingId={listingId} baseIntent={intent} onSaved={handleSavedThenCharge} />
+        <NewCardForm
+          listingId={listingId}
+          baseIntent={intent}
+          onSaved={handleSavedThenCharge}
+          onCancel={methods && methods.length > 0 ? () => setAdding(false) : undefined}
+        />
       )}
       {adding && rail === "ach" && (
         <AddBankForm
@@ -574,10 +714,19 @@ function NewCardForm({
   listingId,
   baseIntent,
   onSaved,
+  onCancel,
 }: {
   listingId: string;
   baseIntent: CheckoutIntent | null;
   onSaved: (paymentMethodId?: string) => void;
+  // Threaded into both branches below (AddCardForm already supported this;
+  // StripePaymentForm didn't). Omitted entirely when there's nothing saved
+  // to go back to (StripeCheckout's own call site), same as AddBankForm's
+  // existing pattern — a real gap this fixes: clicking "Use a different
+  // card" used to be one-way, with no way back to the saved-card picker
+  // short of a full page reload, even though the bank rail already had
+  // this exact affordance.
+  onCancel?: () => void;
 }) {
   const [saveForFuture, setSaveForFuture] = useState(true);
   const [setupSecret, setSetupSecret] = useState<string | null>(null);
@@ -627,6 +776,7 @@ function NewCardForm({
               buttonLabel={baseIntent ? `Save Card & Pay ${formatPrice(baseIntent.amountCents)}` : "Save Card"}
               returnPath={`/checkout/${listingId}`}
               onDone={onSaved}
+              onCancel={onCancel}
             />
           </Elements>
         )
@@ -638,7 +788,7 @@ function NewCardForm({
           stripe={getStripe()}
           options={{ clientSecret: baseIntent.clientSecret, appearance: { theme: "stripe" } }}
         >
-          <StripePaymentForm listingId={listingId} intent={baseIntent} />
+          <StripePaymentForm listingId={listingId} intent={baseIntent} onCancel={onCancel} />
         </Elements>
       )}
     </div>
@@ -648,9 +798,11 @@ function NewCardForm({
 function StripePaymentForm({
   listingId,
   intent,
+  onCancel,
 }: {
   listingId: string;
   intent: CheckoutIntent;
+  onCancel?: () => void;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -715,14 +867,26 @@ function StripePaymentForm({
           else entirely. Each rail's Payment Element should only ever
           show the one payment method its own intent actually created. */}
       <PaymentElement options={{ wallets: { link: "never" } }} />
-      <button
-        type="button"
-        onClick={handlePay}
-        disabled={!stripe || processing}
-        className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-brand-gold px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-brand-gold-light disabled:opacity-60"
-      >
-        {processing ? "Processing payment..." : `Pay ${formatPrice(intent.amountCents)} (Stripe Test)`}
-      </button>
+      <div className="mt-4 flex gap-2">
+        <button
+          type="button"
+          onClick={handlePay}
+          disabled={!stripe || processing}
+          className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-brand-gold px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-brand-gold-light disabled:opacity-60"
+        >
+          {processing ? "Processing payment..." : `Pay ${formatPrice(intent.amountCents)} (Stripe Test)`}
+        </button>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={processing}
+            className="rounded-lg border border-gray-300 px-4 py-3 text-sm font-semibold text-gray-700 transition-colors hover:bg-brand-surface disabled:opacity-60"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
       {error && <p className="mt-3 text-sm text-brand-urgent">{error}</p>}
       <p className="mt-3 text-center text-xs text-gray-500">
         {intent.rail === "ach"

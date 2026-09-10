@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-// maxResults caps a single autocomplete response — the Sell wizard shows a
-// short dropdown, not a full results page.
-const maxResults = 8
-
 var (
 	numberWordRe = regexp.MustCompile(`^\d+$`)
 	nameTokenRe  = regexp.MustCompile(`[\s\-·,']+`)
@@ -58,9 +54,6 @@ func (c *Client) Search(ctx context.Context, auctionHousGame, query string) ([]C
 
 	sort.SliceStable(matches, func(i, j int) bool { return matches[i].score > matches[j].score })
 
-	if len(matches) > maxResults {
-		matches = matches[:maxResults]
-	}
 	results := make([]Card, len(matches))
 	for i, m := range matches {
 		m.card.Game = auctionHousGame
@@ -70,12 +63,9 @@ func (c *Client) Search(ctx context.Context, auctionHousGame, query string) ([]C
 }
 
 // SearchAll runs Search across every game SupportedGames lists and merges
-// the results back into one score-ranked, maxResults-capped list — used by
-// the Favorite Card widget picker, which (unlike the Sell wizard's
-// per-game CardSearch) has no single game already chosen to search
-// within. Each game's own top maxResults matches are fetched independently
-// (so a strong match in one game can't be crowded out of contention by an
-// unrelated game's results before merging), then re-capped once combined.
+// the results back into one score-ranked list — used by the Favorite Card
+// widget picker, which (unlike the Sell wizard's per-game CardSearch) has
+// no single game already chosen to search within.
 func (c *Client) SearchAll(ctx context.Context, query string) ([]Card, error) {
 	type scored struct {
 		card  Card
@@ -114,9 +104,6 @@ func (c *Client) SearchAll(ctx context.Context, query string) ([]Card, error) {
 	}
 
 	sort.SliceStable(all, func(i, j int) bool { return all[i].score > all[j].score })
-	if len(all) > maxResults {
-		all = all[:maxResults]
-	}
 	results := make([]Card, len(all))
 	for i, m := range all {
 		results[i] = m.card

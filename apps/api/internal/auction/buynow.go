@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -140,6 +141,26 @@ func PayForWonAuction(ctx context.Context, pool *pgxpool.Pool, listingID, buyerI
 	return listing.Get(ctx, pool, listingID)
 }
 
+// PayForWonFixedListing mirrors PayForWonAuction for a fixed-format listing
+// already reserved for buyerID via an accepted offer (internal/offer.
+// Accept sets buyer_id/sold_price_cents immediately, payment is a separate
+// step) — same compare-and-swap-on-paid_at guard, so double-clicking "Pay"
+// can never double-charge.
+func PayForWonFixedListing(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID string) (*listing.Listing, error) {
+	tag, err := pool.Exec(ctx, `
+		update listings
+		set paid_at = now()
+		where id = $1 and buyer_id = $2 and paid_at is null
+	`, listingID, buyerID)
+	if err != nil {
+		return nil, fmt.Errorf("update listing: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrAlreadyPaid
+	}
+	return listing.Get(ctx, pool, listingID)
+}
+
 var ErrPaymentRequired = errors.New("payment is required for this purchase")
 
 type buyNowRequest struct {
@@ -211,6 +232,13 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 		payingForWonAuction := lst.Outcome != nil && *lst.Outcome == "sold" &&
 			lst.HighBidderID != nil && *lst.HighBidderID == buyerID
 
+		// A fixed-format listing already reserved for this buyer via an
+		// accepted offer (internal/offer.Accept) — same "ownership already
+		// resolved, this is purely a payment step" shape as
+		// payingForWonAuction above, just for the other format.
+		payingForWonFixedOffer := lst.Format == listing.FormatFixed &&
+			lst.BuyerID != nil && *lst.BuyerID == buyerID
+
 		// The seller still needs to be checked here (not just at
 		// checkout-intent creation time) — same "never trust anything
 		// computed earlier in a gap that could contain a race" reasoning as
@@ -268,6 +296,8 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 
 		var result *listing.Listing
 		switch {
+		case payingForWonFixedOffer:
+			result, err = PayForWonFixedListing(r.Context(), pool, listingID, buyerID)
 		case lst.Format == listing.FormatFixed:
 			result, err = listing.BuyNowFixed(r.Context(), pool, listingID, buyerID)
 		case payingForWonAuction:
@@ -328,9 +358,10 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 				// advancePaymentPendingOrder sets it once payment_intent.
 				// succeeded actually arrives, days later).
 				if rail == order.RailCard {
-					if payingForWonAuction {
-						// PayForWonAuction already set paid_at as part of
-						// its own atomic guard — nothing left to record.
+					if payingForWonAuction || payingForWonFixedOffer {
+						// PayForWonAuction/PayForWonFixedListing already set
+						// paid_at as part of their own atomic guard —
+						// nothing left to record.
 						if refreshed, err := listing.Get(r.Context(), pool, listingID); err == nil {
 							result = refreshed
 						}
@@ -351,13 +382,33 @@ func HandleBuyNow(pool *pgxpool.Pool, paymentClient *payment.Client) http.Handle
 				// worse than a logged inconsistency. Re-quotes fresh from
 				// the seller's currently-stored tier rather than trusting
 				// anything computed at checkout-intent time (CLAUDE.md §5.3).
-				createOrderRecord(r.Context(), pool, listingID, buyerID, lst.SellerID, pi.ID, chargeID, rail, result)
+				createOrderRecord(r.Context(), pool, listingID, buyerID, lst.SellerID, pi, chargeID, rail, result)
 			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}
+}
+
+// shippingFromMetadata reads back the shipping_cents/signature_required
+// values checkout.go stamped onto the PaymentIntent at authorization time
+// (payment.shippingMetadata) — the single source of truth for what the
+// buyer actually agreed to pay, since it came from a live Shippo quote
+// against the real addresses when one was possible. Falls back to the old
+// estimate-based shipping.ChargedCents only for a PaymentIntent that
+// predates this metadata (a malformed/missing value parses to the zero
+// value, which fails the `ok` checks below just as cleanly as a genuinely
+// absent key).
+func shippingFromMetadata(pi *stripe.PaymentIntent, fallbackPreset shipping.Preset, fallbackEstimateCents *int64, fallbackSignatureRequired bool) (shippingCents int64, signatureRequired bool) {
+	if pi != nil {
+		if raw, ok := pi.Metadata["shipping_cents"]; ok {
+			if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				return parsed, pi.Metadata["signature_required"] == "true"
+			}
+		}
+	}
+	return shipping.ChargedCents(fallbackPreset, fallbackEstimateCents), fallbackSignatureRequired
 }
 
 func containsUSBankAccount(types []string) bool {
@@ -379,7 +430,7 @@ func containsUSBankAccount(types []string) bool {
 // later. Logged, not returned as an error: this runs only after a real
 // Stripe payment already committed, so a failure here must never look like
 // the purchase itself failed.
-func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, sellerID, paymentIntentID, chargeID string, rail order.Rail, result *listing.Listing) {
+func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyerID, sellerID string, pi *stripe.PaymentIntent, chargeID string, rail order.Rail, result *listing.Listing) {
 	subtotalCents := subtotalForResult(result)
 	if subtotalCents <= 0 {
 		log.Printf("buy-now: no purchasable price on result for order record (listing %s)", listingID)
@@ -390,13 +441,23 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 	// at listing time — never trusted alone, since a low-starting-bid
 	// auction can close well above the price that was knowable when the
 	// preset was picked. UpgradePreset keeps whichever mechanism is
-	// stricter, per internal/shipping's package doc, and this is also
-	// what determines the real shipping charge below — recomputed fresh
-	// here rather than trusted from whatever checkout.go authorized,
-	// same "never trust a stale precomputed value for money that actually
-	// moves" rule as the rest of this function.
-	resolvedPreset, signatureRequired := shipping.UpgradePreset(shipping.Preset(result.ShippingPreset), subtotalCents)
-	shippingCents := shipping.ChargedCents(resolvedPreset, result.EstimatedShippingCents)
+	// stricter, per internal/shipping's package doc — still safe to
+	// recompute fresh (a pure function of the subtotal/listing preset),
+	// unlike shippingCents/signatureRequired below.
+	resolvedPreset, fallbackSignatureRequired := shipping.UpgradePreset(shipping.Preset(result.ShippingPreset), subtotalCents, result.RequestSignature)
+
+	// shippingCents/signatureRequired come straight off the PaymentIntent's
+	// own metadata — the exact live-quoted number checkout.go authorized
+	// and the buyer was actually charged (shipping.ChargedCentsLive), never
+	// recomputed here. This function runs only after Stripe already
+	// committed the payment; a fresh recompute could legitimately return a
+	// different number (carrier rates can shift between authorization and
+	// this capture), and recording anything other than what was actually
+	// charged would silently desync the order's own ledger from money that
+	// already moved — exactly the class of bug CLAUDE.md §5.3 exists to
+	// prevent. Falls back to the old estimate-based computation only for a
+	// PaymentIntent created before this metadata existed.
+	shippingCents, signatureRequired := shippingFromMetadata(pi, resolvedPreset, result.EstimatedShippingCents, fallbackSignatureRequired)
 
 	quote, tier, tierPct, err := quoteForListing(ctx, pool, sellerID, subtotalCents, shippingCents)
 	if err != nil {
@@ -404,16 +465,41 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 		return
 	}
 
-	orderID, err := order.CreateFromWin(ctx, pool, listingID, buyerID, sellerID, order.CreateInput{
+	in := order.CreateInput{
 		Quote:                 quote,
 		Rail:                  rail,
 		Tier:                  string(tier),
 		TierPct:               tierPct,
-		StripePaymentIntentID: paymentIntentID,
+		StripePaymentIntentID: pi.ID,
 		StripeChargeID:        chargeID,
 		ShippingPreset:        string(resolvedPreset),
 		SignatureRequired:     signatureRequired,
-	})
+	}
+
+	// A won-via-bidding purchase already has a real, unpaid order row —
+	// created the instant the auction closed (createPendingOrderForWin,
+	// close.go) — so payment here finalizes that exact row in place rather
+	// than inserting a second one (order_items' unique listing_id index
+	// would reject a second insert for the same listing anyway). A Buy It
+	// Now / fixed-price purchase never went through that path, so falls
+	// through to the original insert-fresh behavior below.
+	if existing, err := order.GetForListing(ctx, pool, listingID); err == nil {
+		if ferr := order.FinalizePayment(ctx, pool, existing.ID, in); ferr != nil {
+			log.Printf("buy-now: failed to finalize pending order %s for %s: %v", existing.ID, listingID, ferr)
+			return
+		}
+		if rail == order.RailCard {
+			if terr := order.Transition(ctx, pool, existing.ID, order.StatePaid, order.StateAwaitingShip); terr != nil {
+				log.Printf("buy-now: failed to transition order %s to awaiting_ship: %v", existing.ID, terr)
+			}
+		}
+		return
+	} else if !errors.Is(err, order.ErrNotFound) {
+		log.Printf("buy-now: failed to look up existing order for %s: %v", listingID, err)
+		return
+	}
+
+	orderID, err := order.CreateFromWin(ctx, pool, listingID, buyerID, sellerID, in)
 	if err != nil {
 		log.Printf("buy-now: failed to create order record for %s: %v", listingID, err)
 		return
@@ -441,6 +527,9 @@ func createOrderRecord(ctx context.Context, pool *pgxpool.Pool, listingID, buyer
 // this point (no BuyerID-nil/Outcome-nil branches to consider).
 func subtotalForResult(result *listing.Listing) int64 {
 	if result.Format == listing.FormatFixed {
+		if result.SoldPriceCents != nil {
+			return *result.SoldPriceCents
+		}
 		if result.PriceCents != nil {
 			return *result.PriceCents
 		}

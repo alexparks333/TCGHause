@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"auctionhous-tcg/api/internal/notification"
 )
 
 var (
@@ -173,8 +175,14 @@ func Upsert(ctx context.Context, pool *pgxpool.Pool, sellerID, reviewerID, listi
 		commentArg = &comment
 	}
 
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	var id string
-	err = pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		insert into seller_reviews
 			(seller_id, reviewer_id, listing_id, condition_accuracy, shipping_speed, trustworthiness, comment)
 		values ($1, $2, $3, $4, $5, $6, $7)
@@ -190,6 +198,14 @@ func Upsert(ctx context.Context, pool *pgxpool.Pool, sellerID, reviewerID, listi
 	if err != nil {
 		return nil, fmt.Errorf("upsert review: %w", err)
 	}
+
+	if err := notification.Create(ctx, tx, sellerID, notification.KindSellerReviewReceived, listingID); err != nil {
+		return nil, fmt.Errorf("notify seller of review: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
 	// Re-fetch through the same fully-joined query every other read path
 	// uses (username, reviewer's total review count, listing title) rather
 	// than duplicating that join here and risking the two drifting apart.
@@ -198,6 +214,61 @@ func Upsert(ctx context.Context, pool *pgxpool.Pool, sellerID, reviewerID, listi
 
 func overallOf(conditionAccuracy, shippingSpeed, trustworthiness int) float64 {
 	return float64(conditionAccuracy+shippingSpeed+trustworthiness) / 3
+}
+
+// PendingReviewCelebration is one review a recipient hasn't been shown a
+// CelebrationToast pop-up for yet — the review side of
+// auction.CelebrationItem, assembled into that shared shape by
+// auction.PendingCelebrations rather than duplicated here.
+type PendingReviewCelebration struct {
+	ListingID string
+	Title     string
+	ImageURLs []string
+	Rating    float64
+}
+
+// PendingSellerReviewCelebrations returns every review of sellerID (as a
+// seller) that hasn't been celebrated yet, oldest first — same FIFO
+// ordering as auction.PendingCelebrations' win/sale queries.
+func PendingSellerReviewCelebrations(ctx context.Context, pool *pgxpool.Pool, sellerID string) ([]PendingReviewCelebration, error) {
+	rows, err := pool.Query(ctx, `
+		select l.id, l.title, l.image_urls, r.condition_accuracy, r.shipping_speed, r.trustworthiness
+		from seller_reviews r
+		join listings l on l.id = r.listing_id
+		where r.seller_id = $1 and r.celebrated_at is null
+		order by r.created_at asc
+	`, sellerID)
+	if err != nil {
+		return nil, fmt.Errorf("query pending review celebrations: %w", err)
+	}
+	defer rows.Close()
+
+	out := []PendingReviewCelebration{}
+	for rows.Next() {
+		var item PendingReviewCelebration
+		var conditionAccuracy, shippingSpeed, trustworthiness int
+		if err := rows.Scan(&item.ListingID, &item.Title, &item.ImageURLs, &conditionAccuracy, &shippingSpeed, &trustworthiness); err != nil {
+			return nil, fmt.Errorf("scan pending review celebration: %w", err)
+		}
+		item.Rating = overallOf(conditionAccuracy, shippingSpeed, trustworthiness)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// AckSellerReviewCelebration marks listingID's seller review as shown to
+// sellerID, so PendingSellerReviewCelebrations never returns it again. A
+// no-op (not an error) if there's no such un-celebrated review — same
+// "nothing to distinguish for a legitimate caller" reasoning as
+// auction.AckCelebration.
+func AckSellerReviewCelebration(ctx context.Context, pool *pgxpool.Pool, sellerID, listingID string) error {
+	if _, err := pool.Exec(ctx, `
+		update seller_reviews set celebrated_at = now()
+		where listing_id = $1 and seller_id = $2 and celebrated_at is null
+	`, listingID, sellerID); err != nil {
+		return fmt.Errorf("ack seller review celebration: %w", err)
+	}
+	return nil
 }
 
 // AddReply lets sellerID reply to one of their own reviews (reviewID) —

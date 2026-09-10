@@ -127,6 +127,7 @@ export default async function Home({
                 items={listings}
                 watchedIds={watchedIds}
                 isLoggedIn={Boolean(local)}
+                currentUserId={local?.userId}
                 myBidsByListingId={myBidsByListingId}
                 layout="row"
               />
@@ -140,6 +141,7 @@ export default async function Home({
                     items={auctions}
                     watchedIds={watchedIds}
                     isLoggedIn={Boolean(local)}
+                    currentUserId={local?.userId}
                     myBidsByListingId={myBidsByListingId}
                   />
                 )}
@@ -150,6 +152,7 @@ export default async function Home({
                     items={fixedPrice}
                     watchedIds={watchedIds}
                     isLoggedIn={Boolean(local)}
+                    currentUserId={local?.userId}
                     myBidsByListingId={myBidsByListingId}
                   />
                 )}

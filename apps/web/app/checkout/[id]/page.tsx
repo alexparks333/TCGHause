@@ -8,7 +8,7 @@ import ItemSpecifics from "@/components/ItemSpecifics";
 import SellerCard from "@/components/SellerCard";
 import MockCheckout from "@/components/MockCheckout";
 import { getListing, getWatchStatus } from "@/lib/api";
-import { shippingDisplayText } from "@/lib/types";
+import { shippingCostLabel, shippingDisplayText, shippingMethodLabel } from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
 
 // The mock "Purchasing" page a Buy It Now click lands on — deliberately a
@@ -49,11 +49,21 @@ export default async function CheckoutPage({
     listing.highBidderId === local.userId &&
     !listing.paidAt;
 
+  // A fixed-format listing's equivalent of the above — only reachable via
+  // an accepted offer (Make an Offer -> seller accepts), which reserves the
+  // listing for this buyer at soldPriceCents but leaves payment as this
+  // same separate step, same "won, pay later" shape BuyNowFixed never
+  // needed before offers existed.
+  const isFixedWonAwaitingPayment =
+    listing.format === "fixed" && listing.buyerId === local.userId && !listing.paidAt;
+
   const priceCents = isWonAwaitingPayment
     ? listing.currentPriceCents
-    : listing.format === "fixed"
-      ? listing.priceCents ?? 0
-      : listing.buyItNowPriceCents;
+    : isFixedWonAwaitingPayment
+      ? listing.soldPriceCents ?? listing.priceCents ?? 0
+      : listing.format === "fixed"
+        ? listing.priceCents ?? 0
+        : listing.buyItNowPriceCents;
 
   // Nothing to buy/pay for here — either it's not eligible for Buy It Now
   // at all (a plain auction with no buyItNowPriceCents), someone already
@@ -61,11 +71,12 @@ export default async function CheckoutPage({
   // This is a courtesy redirect for stale links, not the real guard —
   // MockCheckout's own payment call re-checks everything atomically
   // server-side regardless of what this page saw at load time.
-  const alreadySold = isWonAwaitingPayment
-    ? false
-    : listing.format === "fixed"
-      ? Boolean(listing.buyerId)
-      : listing.outcome != null;
+  const alreadySold =
+    isWonAwaitingPayment || isFixedWonAwaitingPayment
+      ? false
+      : listing.format === "fixed"
+        ? Boolean(listing.buyerId)
+        : listing.outcome != null;
   if (priceCents === undefined || alreadySold) {
     redirect(`/listing/${id}`);
   }
@@ -96,8 +107,14 @@ export default async function CheckoutPage({
           <span className="text-gray-700">Checkout</span>
         </nav>
 
-        <div className="grid gap-8 lg:grid-cols-3">
-          <div className="flex flex-col gap-6 lg:col-span-2">
+        {/* Matches the listing detail page's own grid exactly
+            (grid-cols-[minmax(0,48rem)_1fr]) — this used to be a fluid
+            lg:grid-cols-3/col-span-2 split, which on a wide viewport let
+            the gallery column stretch far past the listing page's capped
+            width, dragging the payment box away from the image with a
+            much bigger gap than the listing page ever has. */}
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,48rem)_1fr]">
+          <div className="flex flex-col gap-6">
             <ListingGallery
               listingId={listing.id}
               imageUrls={listing.imageUrls ?? []}
@@ -135,14 +152,20 @@ export default async function CheckoutPage({
 
           <aside>
             {isOwner ? (
-              <div className="rounded-2xl border border-brand-border bg-white p-8 text-center shadow-sm">
+              <div className="rounded-xl border border-brand-border bg-white p-5 text-center">
                 <p className="text-sm text-gray-500">
                   This is your own listing — you can&apos;t buy it.
                 </p>
               </div>
             ) : (
               <div className="sticky top-6">
-                <MockCheckout listingId={id} priceCents={priceCents} />
+                <MockCheckout
+                  listingId={id}
+                  priceCents={priceCents}
+                  shippingPreset={listing.shippingPreset}
+                  shippingMethod={shippingMethodLabel(listing)}
+                  shippingCostLabel={shippingCostLabel(listing)}
+                />
               </div>
             )}
           </aside>

@@ -29,6 +29,7 @@ function upsertThreadPreview(
   if (idx === -1) return threads;
   const updated: MessageThreadSummary = {
     ...threads[idx],
+    lastMessageKind: "text",
     lastMessageBody: body,
     lastMessageAt: new Date().toISOString(),
     lastMessageIsMine: true,
@@ -121,8 +122,34 @@ export default function MessagesApp({
     setThreads((prev) => upsertThreadPreview(prev, selectedId, body));
   }
 
+  // Accepting/declining an offer bubble inside the open thread — refetch
+  // both the thread (so the bubble's own status flips immediately, not
+  // after the next OPEN_THREAD_POLL_MS tick) and the thread list (so its
+  // last-message preview/ordering stays current too), same "instant, not
+  // eventually" feel the listing page and Bids/Offers already have for
+  // their own accept/decline buttons.
+  async function handleOfferResolved() {
+    if (!selectedId) return;
+    try {
+      const data = await getMessageThreadClient(selectedId);
+      if (selectedIdRef.current === selectedId) setDetail(data);
+    } catch {
+      // Best-effort — the regular poll will catch up if this one fails.
+    }
+    refreshThreads();
+  }
+
   return (
-    <div className="mt-6 flex min-h-[420px] flex-1 overflow-hidden rounded-xl border border-brand-border bg-white">
+    // A genuinely fixed height, not min-h-*/flex-1 — this box's own
+    // ancestors (AccountLayout's <main>) are sized by min-h-screen, not a
+    // bounded height, so flex-1 here had nothing bounded to divide and the
+    // box just grew to fit however many messages/offers were in the
+    // longest thread, pushing the whole page into a page-level scroll
+    // instead of scrolling internally. A fixed height sidesteps that
+    // entirely: the box always looks like a normal chat window, and both
+    // panes (the thread list, and ThreadView's own message list) scroll
+    // within it via their own overflow-y-auto.
+    <div className="mt-6 flex h-[600px] overflow-hidden rounded-xl border border-brand-border bg-white">
       <div
         className={`w-full shrink-0 overflow-y-auto border-brand-border md:block md:w-80 md:border-r ${
           selectedId ? "hidden md:block" : "block"
@@ -150,7 +177,13 @@ export default function MessagesApp({
 
       <div className={`min-w-0 flex-1 ${selectedId ? "flex" : "hidden md:flex"}`}>
         {selectedId && detail && detail.id === selectedId ? (
-          <ThreadView detail={detail} currentUserId={currentUserId} onBack={handleBack} onSend={handleSend} />
+          <ThreadView
+            detail={detail}
+            currentUserId={currentUserId}
+            onBack={handleBack}
+            onSend={handleSend}
+            onOfferResolved={handleOfferResolved}
+          />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
             <MessageSquare size={28} className="text-gray-300" />

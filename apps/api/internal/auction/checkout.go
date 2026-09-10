@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"auctionhous-tcg/api/internal/address"
 	"auctionhous-tcg/api/internal/listing"
 	"auctionhous-tcg/api/internal/order"
 	"auctionhous-tcg/api/internal/payment"
@@ -15,6 +16,7 @@ import (
 	"auctionhous-tcg/api/internal/platform"
 	"auctionhous-tcg/api/internal/seller"
 	"auctionhous-tcg/api/internal/shipping"
+	"auctionhous-tcg/api/internal/user"
 )
 
 // ErrSellerNotOnboarded blocks checkout when the seller hasn't finished
@@ -46,6 +48,16 @@ type checkoutIntentResponse struct {
 	SellerFeeCents int64 `json:"sellerFeeCents"`
 	SellerNetCents int64 `json:"sellerNetCents"`
 	TaxCents       int64 `json:"taxCents"`
+	// SubtotalCents/ShippingCents were already computed below (subtotalCents,
+	// shippingCents) but never actually put on the response — MockCheckout.tsx
+	// showed only the raw item price as "Total" with no breakdown, so a buyer
+	// saw e.g. "Total $66.66" up top and "Pay $68.22" at the bottom with no
+	// visible reconciliation between the two (the $1.56 gap was shipping, not
+	// missing tax, but from a buyer's seat it read as an unexplained charge
+	// either way). Identical regardless of rail, same as SellerFeeCents above
+	// — only TaxCents/the final total actually vary between card and bank.
+	SubtotalCents int64 `json:"subtotalCents"`
+	ShippingCents int64 `json:"shippingCents"`
 	// SavedCard/SavedBank reflect whichever saved payment method actually
 	// ended up attached to this intent — either paymentMethodId (below)
 	// if the buyer explicitly picked one in MockCheckout.tsx's picker, or
@@ -72,7 +84,7 @@ type checkoutIntentResponse struct {
 // still the atomic compare-and-swap in HandleBuyNow, re-checked from
 // scratch (including the fee quote, quoteForListing) when the payment is
 // actually resolved.
-func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Client) http.HandlerFunc {
+func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Client, shippoClient *shipping.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		buyerID, ok := platform.UserIDFromContext(r.Context())
 		if !ok {
@@ -107,6 +119,24 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 
 		var subtotalCents int64
 		switch {
+		// A fixed listing already reserved for THIS buyer and not yet
+		// paid — only reachable via an accepted offer (internal/offer.
+		// Accept), which sets buyer_id/sold_price_cents immediately but
+		// leaves payment as a separate step, same "won, pay later" shape
+		// as the auction case below. Checked before the generic
+		// FormatFixed case so this buyer's own pending win resolves to
+		// "pay what was agreed," not "already sold."
+		case lst.Format == listing.FormatFixed && lst.BuyerID != nil && *lst.BuyerID == buyerID:
+			if lst.PaidAt != nil {
+				http.Error(w, ErrAlreadyPaid.Error(), http.StatusConflict)
+				return
+			}
+			if lst.SoldPriceCents != nil {
+				subtotalCents = *lst.SoldPriceCents
+			} else if lst.PriceCents != nil {
+				subtotalCents = *lst.PriceCents
+			}
+
 		case lst.Format == listing.FormatFixed:
 			if lst.BuyerID != nil {
 				http.Error(w, listing.ErrAlreadySold.Error(), http.StatusConflict)
@@ -168,8 +198,39 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 		// createOrderRecord does at capture time (shipping.UpgradePreset),
 		// so the authorized amount and the eventually-recorded order amount
 		// can never drift apart.
-		resolvedPreset, _ := shipping.UpgradePreset(shipping.Preset(lst.ShippingPreset), subtotalCents)
-		shippingCents := shipping.ChargedCents(resolvedPreset, lst.EstimatedShippingCents)
+		resolvedPreset, signatureRequired := shipping.UpgradePreset(shipping.Preset(lst.ShippingPreset), subtotalCents, lst.RequestSignature)
+
+		// Real, live-quoted shipping cost — not the listing's frozen
+		// estimate — whenever a real quote is actually possible: this is
+		// the checkout-time recalculation against the real buyer address
+		// that shipping.ChargedCentsLive's own doc comment describes,
+		// same "quote the actual buyer, not a placeholder" rule eBay's
+		// calculated shipping follows. Both addresses are only fetched for
+		// the one preset that can ever need Shippo (free/tracked_envelope
+		// presets are flat/free regardless, per ChargedCentsLive's own
+		// early return) — no point in two DB round trips otherwise.
+		var sellerAddr, buyerAddr *address.Address
+		var sellerEmail, buyerEmail string
+		if resolvedPreset == shipping.PresetShippoGroundAdvantage {
+			if a, err := address.Get(r.Context(), pool, lst.SellerID); err == nil {
+				sellerAddr = a
+			}
+			if a, err := address.Get(r.Context(), pool, buyerID); err == nil {
+				buyerAddr = a
+			}
+			if sellerAddr != nil && buyerAddr != nil {
+				if u, err := user.Get(r.Context(), pool, lst.SellerID); err == nil {
+					sellerEmail = u.Email
+				}
+				if u, err := user.Get(r.Context(), pool, buyerID); err == nil {
+					buyerEmail = u.Email
+				}
+			}
+		}
+		shippingCents := shipping.ChargedCentsLive(
+			r.Context(), shippoClient, resolvedPreset, sellerAddr, buyerAddr, sellerEmail, buyerEmail,
+			signatureRequired, lst.EstimatedShippingCents,
+		)
 
 		quote, _, _, err := quoteForListing(r.Context(), pool, lst.SellerID, subtotalCents, shippingCents)
 		if err != nil {
@@ -184,6 +245,8 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			RealizedSavingCents: int64(quote.RealizedSaving),
 			SellerFeeCents:      int64(quote.SellerFee),
 			SellerNetCents:      int64(quote.SellerNet),
+			SubtotalCents:       subtotalCents,
+			ShippingCents:       shippingCents,
 		}
 
 		if rail == order.RailAch {
@@ -206,7 +269,7 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 				savedBank = bank
 			}
 
-			pi, err := paymentClient.CreateAchIntent(r.Context(), listingID, buyerID, int64(quote.BankTotal), paymentMethodID, platformCustomerID)
+			pi, err := paymentClient.CreateAchIntent(r.Context(), listingID, buyerID, int64(quote.BankTotal), paymentMethodID, platformCustomerID, shippingCents, signatureRequired)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -239,7 +302,7 @@ func HandleCreateCheckoutIntent(pool *pgxpool.Pool, paymentClient *payment.Clien
 			savedCard = card
 		}
 
-		pi, err := paymentClient.CreateIntent(r.Context(), listingID, buyerID, int64(quote.CardTotal), paymentMethodID, platformCustomerID)
+		pi, err := paymentClient.CreateIntent(r.Context(), listingID, buyerID, int64(quote.CardTotal), paymentMethodID, platformCustomerID, shippingCents, signatureRequired)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

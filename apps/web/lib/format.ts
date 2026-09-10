@@ -25,3 +25,12 @@ export function formatDateTime(iso: string): string {
     minute: "2-digit",
   });
 }
+
+// A review/rating count next to a star row has no room for "(100,506)" —
+// this is the "(1.1k)"/"(100.5k)" shorthand once it crosses 1000, one
+// decimal place, no trailing ".0" (2000 -> "2k", not "2.0k").
+export function formatCompactCount(n: number): string {
+  if (n < 1000) return String(n);
+  const thousands = Math.round((n / 1000) * 10) / 10;
+  return `${thousands % 1 === 0 ? thousands.toFixed(0) : thousands.toFixed(1)}k`;
+}

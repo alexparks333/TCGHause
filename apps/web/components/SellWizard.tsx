@@ -40,6 +40,12 @@ export interface WizardData {
   // their own `price` field is the BIN price.
   buyItNowEnabled: boolean;
   buyItNowPrice: string;
+  // Mirrors apps/api/internal/listing.CreateInput's AllowOffers/
+  // MinOfferCents (migration 0049) — only meaningful when a real Buy It
+  // Now price exists (format === "fixed", or an auction with
+  // buyItNowEnabled). minOffer empty string means "no minimum set."
+  allowOffers: boolean;
+  minOffer: string;
   // ShippingPreset is the seller's chosen shipping method (see
   // Step3Price's picker) — a floor, not a guarantee: the backend
   // re-derives the required mechanism from the actual final sale price at
@@ -71,6 +77,8 @@ const INITIAL: WizardData = {
   durationMinutes: 7 * 24 * 60,
   buyItNowEnabled: false,
   buyItNowPrice: "",
+  allowOffers: false,
+  minOffer: "",
   shippingPreset: "tracked_envelope",
 };
 
@@ -112,6 +120,20 @@ export default function SellWizard() {
       return;
     }
 
+    // Mirrors apps/api/internal/listing.Create's allowOffers/minOfferCents
+    // validation — same "checked here too, server re-checks regardless"
+    // reasoning as the two blocks above.
+    const binPriceCents =
+      data.format === "fixed"
+        ? dollarsToCents(data.price)
+        : data.buyItNowEnabled
+          ? dollarsToCents(data.buyItNowPrice)
+          : 0;
+    if (data.allowOffers && data.minOffer.trim() && dollarsToCents(data.minOffer) >= binPriceCents) {
+      setError("Minimum offer must be less than the Buy It Now price.");
+      return;
+    }
+
     setSubmitting(true);
     setError("");
 
@@ -137,6 +159,8 @@ export default function SellWizard() {
             data.format === "auction" && data.buyItNowEnabled
               ? dollarsToCents(data.buyItNowPrice)
               : 0,
+          allowOffers: data.allowOffers,
+          minOfferCents: data.allowOffers && data.minOffer.trim() ? dollarsToCents(data.minOffer) : 0,
           shippingPreset: data.shippingPreset,
           imageUrls: data.photos,
         }),
@@ -153,7 +177,7 @@ export default function SellWizard() {
       <StepBubbles current={step} onStepClick={(target) => target < step && setStep(target)} />
 
       <div className="mt-10 flex flex-col gap-4">
-        {step === 1 && <CardSearch game={data.game} update={update} />}
+        {step === 1 && <CardSearch update={update} />}
 
         <div
           key={step}

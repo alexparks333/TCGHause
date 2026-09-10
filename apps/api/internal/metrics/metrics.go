@@ -55,7 +55,7 @@ type Snapshot struct {
 	MarginByTierRail             []MarginByTierRail `json:"marginByTierRail"`
 	// DisputeRateByTier — validates the risk-pricing premise behind the
 	// tier ladder (design doc v2 §3, §11): New should show a materially
-	// higher dispute rate than Haus Trust, or the pricing isn't doing its job.
+	// higher dispute rate than Hous Trust, or the pricing isn't doing its job.
 	DisputeRateByTier []DisputeRateByTier `json:"disputeRateByTier"`
 	// AchReturnRatePct — design doc v2 §4.1's trigger: above 0.5%,
 	// evaluate switching the discount rail to Instant Bank Payments.

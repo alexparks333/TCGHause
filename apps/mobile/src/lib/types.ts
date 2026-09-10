@@ -266,7 +266,7 @@ export interface ClaimDetail {
 }
 
 // Mirrors apps/api/internal/seller.Tier exactly (same as apps/web/lib/api.ts's SellerTier).
-export type SellerTier = 'new' | 'bronze' | 'silver' | 'gold' | 'haus_trust';
+export type SellerTier = 'new' | 'bronze' | 'silver' | 'gold' | 'hous_trust';
 
 export interface Me {
   id: string;
@@ -292,8 +292,8 @@ export interface PublicUser {
 // "New Seller" isn't hidden or softened just because it's the entry tier.
 export function formatSellerTier(tier: SellerTier): string {
   switch (tier) {
-    case 'haus_trust':
-      return 'Haus Trusted Seller';
+    case 'hous_trust':
+      return 'Hous Trusted Seller';
     case 'gold':
       return 'Gold Seller';
     case 'silver':
@@ -309,7 +309,7 @@ export function formatSellerTier(tier: SellerTier): string {
 // apps/api/internal/seller.tierPct (design doc v2 §3.1).
 export function sellerTierRate(tier: SellerTier): string {
   switch (tier) {
-    case 'haus_trust':
+    case 'hous_trust':
       return '5.50%';
     case 'gold':
       return '6.00%';

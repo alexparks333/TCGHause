@@ -9,6 +9,8 @@ import ItemSpecifics from "@/components/ItemSpecifics";
 import ListingSection from "@/components/ListingSection";
 import AuctionPriceBox from "@/components/AuctionPriceBox";
 import BuyNowButton from "@/components/BuyNowButton";
+import MakeOfferButton from "@/components/MakeOfferButton";
+import OffersPanel from "@/components/OffersPanel";
 import SoldBanner from "@/components/SoldBanner";
 import OwnerListingBanner from "@/components/OwnerListingBanner";
 import {
@@ -19,9 +21,11 @@ import {
   getMyWatchedIds,
   getMyBids,
   getOrderForListing,
+  getOffersForListing,
   labelFromOrder,
   isShippingLabelVisible,
   type Order,
+  type Offer,
 } from "@/lib/api";
 import { formatPrice, shippingCostLabel, shippingMethodLabel, type MyBid } from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
@@ -29,10 +33,16 @@ import ShippingLabelControl from "@/components/ShippingLabelControl";
 
 export default async function ListingPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  // ?offer=<id> — set by the notification bell's offer_received link
+  // (NotificationBell's notificationHref) so OffersPanel below can
+  // visually call out the one offer this page was linked from.
+  searchParams: Promise<{ offer?: string }>;
 }) {
   const { id } = await params;
+  const { offer: highlightOfferId } = await searchParams;
 
   // getListing and getLocalSession don't depend on each other, so they run
   // together instead of stacking — this page never displays verified
@@ -52,13 +62,16 @@ export default async function ListingPage({
     (listing.format === "fixed" && Boolean(listing.buyerId)) ||
     (listing.format === "auction" && (listing.outcome === "sold" || listing.outcome === "bought_now"));
 
-  // None of these five depend on each other — only on `local`/`listing`,
-  // both already resolved — so they run in parallel instead of as five
+  // None of these six depend on each other — only on `local`/`listing`,
+  // both already resolved — so they run in parallel instead of as six
   // separate sequential round trips. The order fetch only fires for the
   // seller viewing their own sold listing — internal/order.GetForListing
   // would 404 for anyone else anyway (order.HandleGetForListing checks
-  // participancy), so there's no point calling it otherwise.
-  const [watchStatus, watchedIds, myBids, moreFromSellerRaw, order] = await Promise.all([
+  // participancy), so there's no point calling it otherwise. The offers
+  // fetch only fires for the seller viewing their own listing with offers
+  // actually enabled — internal/offer.ListForListing would reject anyone
+  // else's call anyway (only that listing's own seller may list them).
+  const [watchStatus, watchedIds, myBids, moreFromSellerRaw, order, offers] = await Promise.all([
     local ? getWatchStatus(listing.id, local.accessToken).catch(() => null) : Promise.resolve(null),
     local ? getMyWatchedIds(local.accessToken).catch(() => new Set<string>()) : Promise.resolve(new Set<string>()),
     local ? getMyBids(local.accessToken).catch(() => [] as MyBid[]) : Promise.resolve([] as MyBid[]),
@@ -72,6 +85,9 @@ export default async function ListingPage({
           throw err;
         })
       : Promise.resolve(null as Order | null),
+    isOwner && listing.allowOffers && local
+      ? getOffersForListing(listing.id, local.accessToken).catch(() => [] as Offer[])
+      : Promise.resolve([] as Offer[]),
   ]);
   const myBidsByListingId = new Map(myBids.map((b) => [b.listing.id, b]));
   const myBid = myBidsByListingId.get(listing.id);
@@ -155,12 +171,38 @@ export default async function ListingPage({
                 />
               ) : (
                 <>
-                  <p className="text-xs text-gray-500">Buy it now</p>
-                  <p className="text-3xl font-bold text-gray-900">
-                    {formatPrice(listing.priceCents ?? 0)}
+                  <p className="text-xs text-gray-500">{listing.buyerId ? "Sold for" : "Buy it now"}</p>
+                  {/* Same red-when-sold convention ListingCard already
+                      applies to its own fixed-price figure
+                      (listing.buyerId ? text-brand-urgent : text-gray-900)
+                      — soldPriceCents wins over priceCents when set, since
+                      an accepted-offer sale can close at a different amount
+                      than the original asking price (order/[id]/page.tsx
+                      already prefers it the same way). */}
+                  <p className={`text-3xl font-bold ${listing.buyerId ? "text-brand-urgent" : "text-gray-900"}`}>
+                    {formatPrice((listing.buyerId ? listing.soldPriceCents : undefined) ?? listing.priceCents ?? 0)}
                   </p>
                   <div className="mt-4 flex flex-col gap-2">
-                    {listing.buyerId ? (
+                    {listing.buyerId && local?.userId === listing.buyerId && !listing.paidAt ? (
+                      // Reserved for this buyer via an accepted offer — same
+                      // "won, pay later" shape as AuctionPriceBox's own
+                      // youWonAwaitingPayment box, just for a fixed listing
+                      // (BuyNowFixed always paid+sold atomically, so this
+                      // state was never reachable before offers existed).
+                      <div className="rounded-lg bg-brand-gold/10 p-3">
+                        <p className="text-sm font-semibold text-brand-gold">Your offer was accepted!</p>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Pay {formatPrice(listing.soldPriceCents ?? listing.priceCents ?? 0)} to complete your
+                          purchase.
+                        </p>
+                        <Link
+                          href={`/checkout/${listing.id}`}
+                          className="mt-3 block rounded-lg bg-brand-gold px-4 py-2 text-center text-sm font-semibold text-white transition-colors hover:bg-brand-gold-light"
+                        >
+                          Pay now
+                        </Link>
+                      </div>
+                    ) : listing.buyerId ? (
                       <SoldBanner
                         label={
                           local?.userId === listing.buyerId
@@ -173,7 +215,16 @@ export default async function ListingPage({
                     ) : isOwner ? (
                       <OwnerListingBanner />
                     ) : local ? (
-                      <BuyNowButton listingId={listing.id} priceCents={listing.priceCents ?? 0} />
+                      <>
+                        <BuyNowButton listingId={listing.id} priceCents={listing.priceCents ?? 0} />
+                        {listing.allowOffers && (
+                          <MakeOfferButton
+                            listingId={listing.id}
+                            binPriceCents={listing.priceCents ?? 0}
+                            minOfferCents={listing.minOfferCents}
+                          />
+                        )}
+                      </>
                     ) : (
                       <Link
                         href="/login"
@@ -186,18 +237,26 @@ export default async function ListingPage({
                 </>
               )}
 
-              <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
-                <Truck size={18} />
-                <span>
-                  <span className="font-medium text-gray-700">{shippingCostLabel(listing)}</span>
-                  {" : "}
-                  {shippingMethodLabel(listing)}
-                </span>
-              </div>
-              <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
-                <ShieldCheck size={14} />
-                Payment protected — released to the seller after your delivery window
-              </div>
+              {/* AuctionPriceBox now renders this block itself (right after
+                  the price header, above the bidding box — Buy It Now moved
+                  below both, see that component's own comment) — only the
+                  fixed-price branch above still needs it rendered here. */}
+              {listing.format !== "auction" && (
+                <>
+                  <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
+                    <Truck size={18} />
+                    <span>
+                      <span className="font-medium text-gray-700">{shippingCostLabel(listing)}</span>
+                      {" : "}
+                      {shippingMethodLabel(listing)}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                    <ShieldCheck size={14} />
+                    Payment protected — released to the seller after your delivery window
+                  </div>
+                </>
+              )}
             </div>
 
             {isOwner && order && isShippingLabelVisible(order.state, Boolean(order.labelUrl)) && (
@@ -208,9 +267,14 @@ export default async function ListingPage({
                   initialLabel={labelFromOrder(order)}
                   shippingPreset={order.shippingPreset}
                   estimatedShippingCents={listing.estimatedShippingCents}
+                  signatureRequired={order.signatureRequired}
                   state={order.state}
                 />
               </div>
+            )}
+
+            {isOwner && listing.allowOffers && (
+              <OffersPanel initialOffers={offers} highlightOfferId={highlightOfferId} />
             )}
 
             <SellerCard
@@ -231,6 +295,7 @@ export default async function ListingPage({
             items={moreFromSeller}
             watchedIds={watchedIds}
             isLoggedIn={Boolean(local)}
+            currentUserId={local?.userId}
             myBidsByListingId={myBidsByListingId}
           />
         </div>

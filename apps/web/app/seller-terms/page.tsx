@@ -15,7 +15,7 @@ const TIER_LADDER = [
   { name: "Bronze", rate: "6.50%", requirement: "15–49 completed orders" },
   { name: "Silver", rate: "6.25%", requirement: "50–149 completed orders" },
   { name: "Gold", rate: "6.00%", requirement: "150–499 completed orders" },
-  { name: "Haus Trust", rate: "5.50%", requirement: "500+ completed orders" },
+  { name: "Hous Trust", rate: "5.50%", requirement: "500+ completed orders" },
 ];
 
 const LIABILITY = [
@@ -123,7 +123,7 @@ export default function SellerTermsPage() {
           <p>
             Payouts are batched weekly by default. You can opt into per-order or instant payouts from
             Account Settings; instant payout carries an additional cost since Stripe charges us for
-            it. Gold and Haus Trust sellers skip the standard claim-window wait entirely — payout
+            it. Gold and Hous Trust sellers skip the standard claim-window wait entirely — payout
             releases the moment the carrier scans your package as delivered, instead of waiting out
             the standard hold.
           </p>

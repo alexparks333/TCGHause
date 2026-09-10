@@ -38,6 +38,7 @@ export default async function WatchlistPage() {
               listing={listing}
               initialWatching
               isLoggedIn={Boolean(local)}
+              currentUserId={local?.userId}
             />
           ))}
         </div>

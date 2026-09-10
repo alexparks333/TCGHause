@@ -17,7 +17,7 @@ import {
   type BuyerStats,
   type Order,
 } from "@/lib/api";
-import { formatPrice } from "@/lib/types";
+import { formatPrice, purchasePriceCents } from "@/lib/types";
 import { getLocalSession } from "@/lib/session";
 
 // The confirmation page app/checkout/[id]'s real (or mock, when Stripe
@@ -69,7 +69,26 @@ export default async function OrderConfirmationPage({
     if (!(err instanceof ApiError && err.status === 404)) throw err;
   }
 
-  const paidCents = listing.format === "fixed" ? listing.priceCents ?? 0 : listing.currentPriceCents ?? 0;
+  // A won-via-bidding auction gets a real order the instant it closes
+  // (internal/auction/close.go's createPendingOrderForWin), state=created,
+  // before the buyer has ever visited checkout — landing here first (e.g.
+  // clicking a Transactions row before paying) has nothing to confirm yet,
+  // so send the buyer straight to the actual next step instead of this
+  // page's "Payment complete!" copy, which would be a lie for this order.
+  // Not done for payment_pending (ACH already submitted, just clearing) —
+  // sending them back to checkout there would risk a second intent.
+  if (isBuyer && order?.state === "created") {
+    redirect(`/checkout/${id}`);
+  }
+  const awaitingBuyerPayment = order?.state === "created" || order?.state === "payment_pending";
+
+  // purchasePriceCents (lib/types.ts) — not a raw listing.priceCents/
+  // currentPriceCents reimplementation — since a fixed-format listing sold
+  // via an accepted offer can close for less than its own asking price
+  // (listing.soldPriceCents). Using priceCents directly here would show
+  // the original asking price on this confirmation page instead of what
+  // the buyer actually paid, the exact bug this was built to fix.
+  const paidCents = purchasePriceCents(listing);
   const photo = listing.imageUrls?.[0];
 
   // Only fetched once there's a real order and a real buyer to review —
@@ -99,14 +118,26 @@ export default async function OrderConfirmationPage({
           <div className="rounded-2xl border border-brand-border bg-white p-8 text-center shadow-sm">
             <CheckCircle2 className="mx-auto text-brand-success" size={40} />
             <h1 className="mt-4 text-2xl font-bold text-gray-900">
-              {isBuyer ? (wonViaBidding ? "Payment complete!" : "Purchase complete!") : "You sold this!"}
+              {isBuyer
+                ? awaitingBuyerPayment
+                  ? "Almost there — payment pending"
+                  : wonViaBidding
+                    ? "Payment complete!"
+                    : "Purchase complete!"
+                : awaitingBuyerPayment
+                  ? "Sold — awaiting payment"
+                  : "You sold this!"}
             </h1>
             <p className="mt-1 text-sm text-gray-500">
               {isBuyer
-                ? wonViaBidding
-                  ? "You won this auction, and now it's paid for."
-                  : "Bought with Buy It Now, no bidding required."
-                : "Upload proof of shipment below once it's packed and ready to go."}
+                ? awaitingBuyerPayment
+                  ? "Your bank payment is still processing — this can take a few business days."
+                  : wonViaBidding
+                    ? "You won this auction, and now it's paid for."
+                    : "Bought with Buy It Now, no bidding required."
+                : awaitingBuyerPayment
+                  ? "The buyer still needs to complete payment before you can ship."
+                  : "Upload proof of shipment below once it's packed and ready to go."}
             </p>
 
             <div className="mt-6 flex items-center gap-4 rounded-xl bg-brand-surface p-4 text-left">

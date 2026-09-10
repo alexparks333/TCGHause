@@ -10,14 +10,23 @@ import { formatMsLeft } from "@/lib/types";
 // row .map() — hooks can't be called conditionally or in a loop directly,
 // but a separate component instance per row is exactly what the rules of
 // hooks allow.
-export default function PaymentCountdown({ dueAt }: { dueAt: string }) {
+export default function PaymentCountdown({
+  dueAt,
+  // Lets a caller override the default text-xs — TransactionStepper's
+  // "Needs Payment" bubble label needs this a size smaller than the
+  // "Needs Payment" text above it, everywhere else keeps the default.
+  className = "text-xs",
+}: {
+  dueAt: string;
+  className?: string;
+}) {
   const msLeft = useMsLeft(dueAt);
   if (msLeft === null) return null;
   const expired = msLeft <= 0;
 
   return (
     <span
-      className={`text-xs font-semibold ${expired ? "text-gray-400" : "text-brand-urgent"}`}
+      className={`font-semibold ${className} ${expired ? "text-gray-400" : "text-brand-urgent"}`}
       // Same server/client Date.now() skew as every other live countdown
       // on the site (ListingCard, AuctionPriceBox) — corrects within a
       // second via useMsLeft's own interval, not a real hydration bug.

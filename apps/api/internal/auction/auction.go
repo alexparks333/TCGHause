@@ -185,10 +185,21 @@ func attemptBid(ctx context.Context, pool *pgxpool.Pool, listingID, bidderID str
 		}
 	}
 
+	// buy_it_now_price_cents = null on every successful bid, not just the
+	// first — idempotent once it's already null, and matches eBay's own
+	// real behavior for a non-reserve auction: Buy It Now doesn't just
+	// become locked, it disappears from the listing entirely the instant
+	// bidding starts (internal/listing.Update's own doc comment covers the
+	// seller side of this same rule — nothing about price is editable once
+	// there's a real bid). Every frontend surface (ListingCard's badge/
+	// button, AuctionPriceBox, ListingRow) already gates purely on
+	// buyItNowPriceCents being truthy, so clearing it here is the one
+	// place this needs to happen — nothing downstream needs its own
+	// "has bids" check.
 	tag, err := tx.Exec(ctx, `
 		update auctions
 		set current_price_cents = $1, high_bidder_id = $2, version = version + 1,
-			bid_count = bid_count + 1
+			bid_count = bid_count + 1, buy_it_now_price_cents = null
 		where listing_id = $3 and version = $4
 	`, newPrice, newHighBidder, listingID, version)
 	if err != nil {

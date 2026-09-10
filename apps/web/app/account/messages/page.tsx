@@ -13,15 +13,23 @@ export default async function MessagesPage({
   // verified session, same reasoning as the Watchlist/Selling pages.
   const local = await getLocalSession();
 
+  // Fetched in this order deliberately, not in parallel: getMessageThread
+  // marks the thread read as a side effect (GetThreadDetail's own doc
+  // comment), and getMyThreads' own "unread" flag per thread is only as
+  // fresh as whatever last_read_at was at the moment IT ran. Fetching
+  // threads first (or fetching both concurrently via Promise.all) meant a
+  // deep link straight into a specific thread — the notification bell's
+  // "new message" link, most often — landed with that exact thread's own
+  // dot still showing unread in the list beside it, correcting itself only
+  // on the next 15s poll. Awaiting the detail fetch first so its read-mark
+  // has already landed before the list query runs is what makes the two
+  // agree from the very first paint.
+  const initialDetail =
+    local && thread ? await getMessageThread(thread, local.accessToken).catch(() => null) : null;
+
   const initialThreads = local
     ? (await getMyThreads(local.accessToken).catch(() => ({ threads: [], unreadCount: 0 }))).threads
     : [];
-
-  // A stale/foreign ?thread= (deleted conversation, someone else's link)
-  // just falls back to no selection rather than erroring the whole page —
-  // same "degrade, don't crash" reasoning as getListing's 404 -> null.
-  const initialDetail =
-    local && thread ? await getMessageThread(thread, local.accessToken).catch(() => null) : null;
 
   return (
     // h-full + flex-col so MessagesApp's flex-1 pane below can consume

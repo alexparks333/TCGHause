@@ -5,9 +5,9 @@ otherwise). Written from a walkthrough the user gave of exactly how a sale
 should feel end to end. Several related things have shipped since, in
 separate passes, and aren't part of this plan: the real `charge.dispute.*`
 webhook (`internal/chargeback`); the tier-based instant-release shortcut,
-which applies to **Haus Trust only** (Gold and Platinum do not get it); a
+which applies to **Hous Trust only** (Gold and Platinum do not get it); a
 real, running tier-promotion engine (`internal/seller/promotion.go`,
-`cmd/worker`'s daily recompute); and Haus Trust becoming its own top tier
+`cmd/worker`'s daily recompute); and Hous Trust becoming its own top tier
 above Platinum, reached only through a real application process with a
 per-seller negotiated commission rate, never by order volume — see
 `docs/PercentageModel.md` §4 and §6.1 for all of this, current and accurate

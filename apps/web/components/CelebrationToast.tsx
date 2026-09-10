@@ -2,43 +2,65 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { DollarSign } from "lucide-react";
+import { DollarSign, Handshake, Star, Trophy, type LucideIcon } from "lucide-react";
 import { formatPrice } from "@/lib/types";
 import { ackCelebration, type CelebrationItem } from "@/lib/api";
 
-const BURST_MS = 1300;
-const BURST_EXIT_MS = 300;
-const REVEAL_MS = 4000;
-const REVEAL_EXIT_MS = 300;
+// A kind icon reads at a glance without waiting for a photo to load (or
+// having one at all — the dev test items below have none), same reasoning
+// as the badges elsewhere in this codebase (NotificationBell's KIND_META,
+// the Won/Sold/Lost corner badges). "offer" isn't a real backend
+// celebration yet (auction.PendingCelebrations only ever sends win/sale/
+// review) — it's here so the dev panel's TN button can preview what it'll
+// look like once that feature exists.
+const KIND_ICON: Record<"win" | "sale" | "review" | "offer", { Icon: LucideIcon; classes: string }> = {
+  win: { Icon: Trophy, classes: "bg-brand-gold/15 text-brand-gold" },
+  sale: { Icon: DollarSign, classes: "bg-brand-success/15 text-brand-success" },
+  review: { Icon: Star, classes: "bg-amber-400/15 text-amber-400" },
+  offer: { Icon: Handshake, classes: "bg-sky-400/15 text-sky-400" },
+};
 
+const HOLD_MS = 3200;
 // When there's a backlog queued behind this one (e.g. a bunch of
 // historical wins/sales that had never been celebrated before this
-// feature existed), the reveal card cuts way short — a single real-time
-// celebration still gets the full satisfying ~6s, but a pile of ten
+// feature existed), the hold cuts way short — a single real-time
+// celebration still gets the full satisfying ~3.5s, but a pile of ten
 // doesn't turn into a full minute of forced waiting to get through them.
-const QUICK_REVEAL_MS = 900;
+const QUICK_HOLD_MS = 1100;
+// Must match .animate-celebration-toast-out's duration (globals.css).
+const EXIT_MS = 400;
 
-type Phase = "burst" | "burst-exit" | "reveal" | "reveal-exit";
+type Phase = "in" | "out";
 
-// Two-phase celebration for one win/sale: a bouncy money-and-headline
-// burst, crossfading into a compact card showing exactly what was won or
-// sold. CelebrationWatcher mounts a fresh instance (keyed by
+// A thin, Rust-pickup-style toast for one win/sale/review: slides in at
+// the bottom-right corner, holds briefly, then exits by sliding straight
+// up off the screen while fading out — rather than the old two-phase
+// bouncy burst-into-card, this is a single compact bar the whole way
+// through. CelebrationWatcher mounts a fresh instance (keyed by
 // listingId+kind) per queued item, so this only ever runs its timeline
-// once per item — it doesn't need to track "have I already played."
+// once per item.
 export default function CelebrationToast({
   item,
   kind,
   quick = false,
   onDone,
+  linkable = true,
 }: {
   item: CelebrationItem;
-  kind: "win" | "sale";
+  kind: "win" | "sale" | "review" | "offer";
   // True when more celebrations are queued behind this one.
   quick?: boolean;
   onDone: () => void;
+  // False for the dev panel's TN test-notification preview (DevQuickSwitch)
+  // — item.listingId there isn't a real listing, so linking to it would 404
+  // for no reason. Still clickable either way (see `href` below) — a
+  // toast that visibly does nothing when clicked reads as broken, TN
+  // preview or not. Every real celebration (from CelebrationWatcher)
+  // leaves this at its default.
+  linkable?: boolean;
 }) {
-  const [phase, setPhase] = useState<Phase>("burst");
-  const revealMs = quick ? QUICK_REVEAL_MS : REVEAL_MS;
+  const [phase, setPhase] = useState<Phase>("in");
+  const holdMs = quick ? QUICK_HOLD_MS : HOLD_MS;
 
   // Ack the moment the toast starts, not on dismiss — a tab closed
   // mid-animation still counts as "seen," so it never plays twice.
@@ -47,83 +69,57 @@ export default function CelebrationToast({
   }, [item.listingId, kind]);
 
   useEffect(() => {
-    const toBurstExit = setTimeout(() => setPhase("burst-exit"), BURST_MS);
-    const toReveal = setTimeout(() => setPhase("reveal"), BURST_MS + BURST_EXIT_MS);
-    const toRevealExit = setTimeout(
-      () => setPhase("reveal-exit"),
-      BURST_MS + BURST_EXIT_MS + revealMs
-    );
-    const toDone = setTimeout(onDone, BURST_MS + BURST_EXIT_MS + revealMs + REVEAL_EXIT_MS);
+    const toOut = setTimeout(() => setPhase("out"), holdMs);
+    const toDone = setTimeout(onDone, holdMs + EXIT_MS);
     return () => {
-      clearTimeout(toBurstExit);
-      clearTimeout(toReveal);
-      clearTimeout(toRevealExit);
+      clearTimeout(toOut);
       clearTimeout(toDone);
     };
-  }, [onDone, revealMs]);
+  }, [onDone, holdMs]);
 
-  const headline = kind === "win" ? "Bid Won!" : "Item Sold!";
-  const badgeLabel = kind === "win" ? "Won" : "Sold";
+  const label =
+    kind === "win" ? "Won" : kind === "sale" ? "Sold" : kind === "review" ? "New Review" : "New Offer";
+  // A review has no price — it shows the star rating instead. Only a sale
+  // reads as money coming in — a win (you paid) or an offer (not yet
+  // accepted) don't get the "+" a Rust pickup notification would put on a
+  // resource gain.
+  const amount =
+    kind === "review"
+      ? `★ ${(item.rating ?? 0).toFixed(1)}`
+      : `${kind === "sale" ? "+" : ""}${formatPrice(item.priceCents)}`;
+  const { Icon, classes: iconClasses } = KIND_ICON[kind];
+
+  const cardClassName = `pointer-events-auto flex w-72 items-center gap-3 rounded-lg bg-gray-900/95 py-2.5 pl-2.5 pr-3.5 shadow-2xl ring-1 ring-white/10 backdrop-blur-sm transition-shadow hover:shadow-black/40 ${
+    phase === "out" ? "animate-celebration-toast-out" : "animate-celebration-toast-in"
+  }`;
+
+  const content = (
+    <>
+      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${iconClasses}`}>
+        <Icon size={18} strokeWidth={2.25} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-white">{item.title}</p>
+        <p className="text-xs text-gray-400">{label}</p>
+      </div>
+      <p className="shrink-0 text-sm font-bold text-gray-200">{amount}</p>
+    </>
+  );
+
+  // win/sale link to /order/{listingId} — app/order/[id]/page.tsx is keyed
+  // by LISTING id, not a real orders.id (it calls getListing(id)/
+  // getOrderForListing(id, ...)), and degrades gracefully to its own
+  // "shipping isn't wired up yet" copy when no real order row exists yet
+  // for that listing — same reasoning as NotificationBell's own
+  // won/bought/sold routing. A review has no order concept, so it stays
+  // on the listing page.
+  const href = !linkable ? "/" : kind === "review" ? `/listing/${item.listingId}` : `/order/${item.listingId}`;
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-20 z-50 flex justify-center px-4">
-      {(phase === "burst" || phase === "burst-exit") && (
-        <div
-          className={`flex flex-col items-center gap-2 rounded-2xl bg-white px-8 py-6 shadow-2xl ring-1 ring-brand-border ${
-            phase === "burst-exit" ? "animate-celebration-fade-out" : "animate-celebration-burst-in"
-          }`}
-        >
-          <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-brand-success/10">
-            <span
-              className="absolute -left-2 -top-2 animate-celebration-float-up text-2xl"
-              style={{ animationDelay: "0.1s" }}
-            >
-              💰
-            </span>
-            <span
-              className="absolute -right-2 -top-1 animate-celebration-float-up text-xl"
-              style={{ animationDelay: "0.3s" }}
-            >
-              💰
-            </span>
-            <span
-              className="absolute -bottom-1 left-1 animate-celebration-float-up text-lg"
-              style={{ animationDelay: "0.5s" }}
-            >
-              💰
-            </span>
-            <DollarSign size={32} className="text-brand-success" strokeWidth={3} />
-          </div>
-          <p className="text-xl font-extrabold text-brand-success">{headline}</p>
-        </div>
-      )}
-
-      {(phase === "reveal" || phase === "reveal-exit") && (
-        <Link
-          href={`/listing/${item.listingId}`}
-          className={`pointer-events-auto flex items-center gap-3 rounded-2xl bg-white p-3 pr-5 shadow-2xl ring-1 ring-brand-border transition-shadow hover:shadow-xl ${
-            phase === "reveal-exit"
-              ? "animate-celebration-slide-out"
-              : "animate-celebration-reveal-in"
-          }`}
-        >
-          <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-brand-surface">
-            {item.imageUrl && (
-              // Fixed 56px thumbnail in a short-lived toast — next/image's
-              // overhead isn't worth it here.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={item.imageUrl} alt={item.title} className="h-full w-full object-cover" />
-            )}
-            <span className="absolute -right-1.5 -top-1.5 rounded-full bg-brand-success px-1.5 py-0.5 text-[9px] font-bold text-white shadow">
-              {badgeLabel}
-            </span>
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-gray-900">{item.title}</p>
-            <p className="text-xs text-gray-500">{formatPrice(item.priceCents)}</p>
-          </div>
-        </Link>
-      )}
+    <div className="pointer-events-none fixed bottom-6 right-6 z-50">
+      <Link href={href} className={cardClassName}>
+        {content}
+      </Link>
     </div>
   );
 }
